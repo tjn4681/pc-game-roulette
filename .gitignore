@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.spec
+build/
+dist/
+
+# App runtime files
+cache/
+config.json
+
+# PyInstaller output
+*.exe
+
+# IDE / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Steam Roulette</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- Loading -->
+  <div id="screen-loading" class="screen active">
+    <div class="center-stack">
+      <div class="logo">STEAM ROULETTE</div>
+      <div class="spinner"></div>
+      <div class="loading-text">Detecting Steam…</div>
+    </div>
+  </div>
+
+  <!-- Account picker (fallback) -->
+  <div id="screen-pick" class="screen">
+    <div class="center-stack">
+      <div class="logo">STEAM ROULETTE</div>
+      <p class="subtitle">Multiple Steam accounts found. Which one?</p>
+      <div id="account-list" class="account-list"></div>
+      <button class="btn-secondary" id="btn-browse-pick">Browse for file…</button>
+    </div>
+  </div>
+
+  <!-- Error / not found -->
+  <div id="screen-error" class="screen">
+    <div class="center-stack">
+      <div class="logo">STEAM ROULETTE</div>
+      <p class="subtitle" id="error-message">Could not locate Steam collections.</p>
+      <button class="btn-primary" id="btn-browse-error">Browse for file…</button>
+      <p class="hint">Navigate to:<br>
+        <code>Steam\userdata\&lt;id&gt;\config\cloudstorage\cloud-storage-namespace-1.json</code>
+      </p>
+    </div>
+  </div>
+
+  <!-- Collection grid -->
+  <div id="screen-main" class="screen">
+    <header>
+      <span class="logo-small">STEAM ROULETTE</span>
+      <div class="header-right">
+        <div class="user-badge hidden" id="user-badge">
+          <img id="user-avatar" alt="">
+          <span id="user-name"></span>
+        </div>
+        <button class="btn-secondary btn-sm" id="btn-coll-roulette">Collection Roulette</button>
+        <button class="btn-ghost" id="btn-reload-main" title="Reload collections from Steam">&#8635;</button>
+        <div class="menu-container">
+          <button class="btn-ghost" id="btn-menu" title="More options">&#9776;</button>
+          <div class="menu-dropdown hidden" id="header-menu">
+            <button class="menu-item" id="menu-settings">Settings…</button>
+            <button class="menu-item" id="menu-manage-shortcuts">Manage Non-Steam Shortcuts…</button>
+            <button class="menu-item" id="menu-change-file">Change Collection File…</button>
+          </div>
+        </div>
+      </div>
+    </header>
+    <div id="collection-grid"></div>
+    <div id="empty-state" class="empty-state hidden">
+      <p>No custom collections found in this file.</p>
+      <p class="hint">Create collections in Steam Library first, then relaunch.</p>
+    </div>
+  </div>
+
+  <!-- Debug modal (Ctrl+Shift+D) -->
+  <div id="debug-modal" class="debug-modal hidden">
+    <div class="debug-modal-inner">
+      <div class="debug-modal-header">
+        <span>Debug Inspector</span>
+        <div class="debug-modal-actions">
+          <button class="debug-modal-btn" id="debug-modal-copy" title="Copy entire log to clipboard">Copy</button>
+          <button class="debug-modal-btn" id="debug-modal-save" title="Save log to a .txt file">Save…</button>
+          <button class="debug-modal-close" id="debug-modal-close">&times;</button>
+        </div>
+      </div>
+      <pre id="debug-modal-content"></pre>
+    </div>
+  </div>
+
+  <!-- Settings -->
+  <div id="screen-settings" class="screen">
+    <header>
+      <button class="btn-ghost" id="btn-back-settings" title="Back">&#8592;</button>
+      <div class="spin-header-center">
+        <div class="logo-small">SETTINGS</div>
+        <div class="subtitle">Manage hidden collections and excluded games</div>
+      </div>
+      <div style="width:48px"></div>
+    </header>
+    <div class="settings-content">
+      <section class="settings-section">
+        <h3>Hidden Collections</h3>
+        <div class="settings-list" id="hidden-list"></div>
+      </section>
+      <section class="settings-section">
+        <h3>Excluded Games</h3>
+        <div class="settings-list" id="excluded-list"></div>
+      </section>
+    </div>
+  </div>
+
+  <!-- Manage Non-Steam Shortcuts -->
+  <div id="screen-manage-shortcuts" class="screen">
+    <header>
+      <button class="btn-ghost" id="btn-back-manage" title="Back">&#8592;</button>
+      <div class="spin-header-center">
+        <div class="logo-small">MANAGE NON-STEAM SHORTCUTS</div>
+        <div class="subtitle" id="manage-subtitle">Assign each shortcut to one or more collections</div>
+      </div>
+      <div style="width:48px"></div>
+    </header>
+    <div class="manage-layout">
+      <div class="manage-list-pane">
+        <input type="text" class="manage-search" id="manage-search" placeholder="Search shortcuts…">
+        <div class="manage-list" id="manage-list"></div>
+      </div>
+      <div class="manage-detail-pane" id="manage-detail">
+        <div class="manage-empty">Select a shortcut on the left to assign collections.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Spin screen (game mode + collection roulette mode) -->
+  <div id="screen-spin" class="screen">
+    <header>
+      <button class="btn-ghost" id="btn-back-to-main">&#8592;</button>
+      <div class="spin-header-center">
+        <div id="spin-coll-name" class="logo-small"></div>
+        <div id="spin-coll-count" class="subtitle"></div>
+      </div>
+      <div style="width:48px"></div>
+    </header>
+
+    <!-- Reel stage -->
+    <div id="stage-reel" class="spin-stage">
+      <div class="reel-wrap">
+        <div class="reel-viewport">
+          <div class="reel-grad reel-grad-top"></div>
+          <div id="reel" class="reel"></div>
+          <div class="reel-grad reel-grad-bottom"></div>
+          <div class="reel-frame"></div>
+        </div>
+      </div>
+      <div class="spin-btn-row">
+        <button id="btn-spin" class="btn-spin">SPIN</button>
+      </div>
+    </div>
+
+    <!-- Winner stage -->
+    <div id="stage-winner" class="spin-stage hidden">
+      <div class="winner-display">
+
+        <!-- GAME MODE: header image + name -->
+        <img id="winner-img" class="winner-img" src="" alt="">
+        <div id="winner-name" class="winner-name">Loading…</div>
+        <div id="winner-meta" class="winner-meta hidden"></div>
+
+        <!-- COLLECTION MODE: styled name card -->
+        <div id="winner-coll-card" class="winner-coll-card hidden">
+          <div id="winner-coll-title" class="winner-coll-title"></div>
+          <div id="winner-coll-sub"   class="winner-coll-sub"></div>
+        </div>
+
+        <div class="winner-btn-row">
+          <button id="btn-launch"     class="btn-launch hidden">&#9654;&nbsp;Launch</button>
+          <button id="btn-spin-game"  class="btn-primary hidden">Spin a Game</button>
+          <button id="btn-spin-again" class="btn-primary">Spin Again</button>
+          <button id="btn-exclude"    class="btn-ghost btn-exclude hidden">Don't show again</button>
+          <button id="btn-back-colls" class="btn-ghost">&#8592; Collections</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+<script src="app.js"></script>
+</body>
+</html>
