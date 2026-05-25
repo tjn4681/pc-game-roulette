@@ -1,10 +1,15 @@
-# Steam Roulette
+# PC Game Roulette
+
+(Originally Steam Roulette — renamed once the scope grew beyond Steam.)
 
 ## What this is
-A portable Windows desktop app that picks a random game from the user's Steam
-library with a slot-machine spin animation. The user picks one of their Steam
-Collections (custom categories), the app spins through that collection's games
-and lands on one. Shipped as a single .exe so non-technical friends can run it.
+A portable Windows desktop app that picks a random game from the user's PC
+library across **Steam, GOG, and Epic Games**, with a slot-machine spin
+animation. The user picks a platform tab, optionally picks a collection or
+tag, the app spins through the games and lands on one. There's also a
+"Leave It To Fate" mode that spins across every game on every connected
+platform at once. Shipped as a single .exe so non-technical friends can run
+it.
 
 ## Stack
 - Python backend: Steam file detection, collections JSON parsing, name lookups

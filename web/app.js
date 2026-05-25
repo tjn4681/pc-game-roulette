@@ -1,17 +1,85 @@
-/* Steam Roulette — Phase 4 */
+/* PC Game Roulette — frontend */
 
 let api = null;
 let currentCollection   = null;  // active collection for game spin
 let allCollections      = [];    // all real collections (for Collection Roulette)
 let allShortcutAppids   = [];    // every non-Steam shortcut appid (from shortcuts.vdf)
 let allHiddenCollections = [];   // names the user has hidden (incl. synthetic cards)
-let spinMode            = 'game'; // 'game' | 'collection'
+let spinMode            = 'game'; // 'game' | 'collection' | 'platform'
 let currentWinnerAppid  = null;  // appid currently shown in footer-winner (guards stale callbacks)
 let hltbSpinPromise     = null;  // Promise<hltb result> — started during spin, consumed by loadHltbData
 let hltbSpinAppid       = null;  // which appid hltbSpinPromise is for
-let prevGameWinner    = null;   // last winning appid — used to start Spin Again reel
+let prevGameWinner    = null;   // last winning appid (game mode) or game obj (platform mode)
 let prevCollWinner    = null;   // last winning collection
 let pendingStartFrom  = null;   // startFrom value queued by spinAgain for doSpin
+
+let currentPlatform      = 'steam'; // 'steam' | 'gog' | 'epic' | 'all'
+let gogGames             = [];      // [{id, raw_id, name, platform}] from get_gog_games()
+let epicGames            = [];      // [{id, raw_id, name, platform}] from get_epic_games()
+let currentPlatformGames = [];      // active pool when spinMode === 'platform'
+
+// Two separate filter sources that both produce per-platform ID exclude sets:
+//   * Cross-platform dedup (Batman on Steam + Epic → hide the non-preferred)
+//   * Edition preference  (Mass Effect + Mass Effect Legendary → hide one)
+// We fetch each lazily and combine into a single set per platform for the
+// filter helpers below — callers don't need to care WHY a game is hidden.
+let dedupExcludes   = null;
+let editionExcludes = null;
+
+async function getDedupExcludes() {
+  if (dedupExcludes !== null) return dedupExcludes;
+  if (!api) {
+    dedupExcludes = { steam: new Set(), gog: new Set(), epic: new Set() };
+    return dedupExcludes;
+  }
+  const r = await api.get_duplicate_filter();
+  dedupExcludes = (r && r.status === 'ok')
+    ? { steam: new Set(r.steam), gog: new Set(r.gog), epic: new Set(r.epic) }
+    : { steam: new Set(), gog: new Set(), epic: new Set() };
+  return dedupExcludes;
+}
+
+async function getEditionExcludes() {
+  if (editionExcludes !== null) return editionExcludes;
+  if (!api) {
+    editionExcludes = { steam: new Set(), gog: new Set(), epic: new Set() };
+    return editionExcludes;
+  }
+  const r = await api.get_edition_filter();
+  editionExcludes = (r && r.status === 'ok')
+    ? { steam: new Set(r.steam), gog: new Set(r.gog), epic: new Set(r.epic) }
+    : { steam: new Set(), gog: new Set(), epic: new Set() };
+  return editionExcludes;
+}
+
+async function getAllExcludes() {
+  const [d, e] = await Promise.all([getDedupExcludes(), getEditionExcludes()]);
+  return {
+    steam: new Set([...d.steam, ...e.steam]),
+    gog:   new Set([...d.gog,   ...e.gog]),
+    epic:  new Set([...d.epic,  ...e.epic]),
+  };
+}
+
+function invalidateDedupCache()   { dedupExcludes = null; }
+function invalidateEditionCache() { editionExcludes = null; }
+function invalidateAllExcludes()  { dedupExcludes = null; editionExcludes = null; }
+
+// Drop games whose id is in any of the per-platform exclude sets.
+async function filterDuplicates(games) {
+  if (!games || !games.length) return games;
+  const ex = await getAllExcludes();
+  return games.filter(g => !ex[g.platform]?.has(g.id));
+}
+
+// Variant for raw Steam appids (numeric) — used in Steam collections where the
+// data shape predates the {id, raw_id, ...} structure.
+async function filterSteamAppids(appids) {
+  if (!appids || !appids.length) return appids;
+  const ex = await getAllExcludes();
+  if (!ex.steam.size) return appids;
+  return appids.filter(a => !ex.steam.has(`steam_${a}`));
+}
 
 // ── Screen routing ────────────────────────────────────────────────────────
 
@@ -22,7 +90,7 @@ function showScreen(id) {
 
 // ── Collection grid ───────────────────────────────────────────────────────
 
-function renderCollections(collections, shortcutAppids, hiddenList) {
+async function renderCollections(collections, shortcutAppids, hiddenList) {
   const grid  = document.getElementById('collection-grid');
   const empty = document.getElementById('empty-state');
   grid.innerHTML = '';
@@ -33,9 +101,21 @@ function renderCollections(collections, shortcutAppids, hiddenList) {
     allHiddenCollections = hiddenList;
   const hiddenSet = new Set(allHiddenCollections);
 
+  // If cross-platform dedup is enabled and Steam isn't the top priority, some
+  // Steam appids may need to be hidden because they're available on a
+  // higher-ranked platform.  Build a filtered view (without mutating the
+  // canonical allCollections, which other UI consumers rely on).
+  const stripExcludes = async (appids) => filterSteamAppids(appids);
+  const filteredColls = await Promise.all(allCollections.map(async (c) => ({
+    ...c,
+    appids: await stripExcludes(c.appids),
+  })));
+  // Recompute counts to match what's actually spinnable
+  filteredColls.forEach(c => { c.count = c.appids.length; });
+
   // Whole Library = union of every appid across visible collections + shortcuts
-  const allAppIds = [...new Set([
-    ...allCollections.flatMap(c => c.appids),
+  let allAppIds = [...new Set([
+    ...filteredColls.flatMap(c => c.appids),
     ...allShortcutAppids,
   ])];
 
@@ -53,14 +133,16 @@ function renderCollections(collections, shortcutAppids, hiddenList) {
     ));
   }
 
-  if (!allCollections.length) {
+  if (!filteredColls.length) {
     if (allAppIds.length === 0) loadInstalledLibrary(grid, empty);
     else { empty.classList.remove('hidden'); showScreen('screen-main'); }
     return;
   }
 
   empty.classList.add('hidden');
-  allCollections.forEach(c => grid.appendChild(makeCollCard(c, null)));
+  // Hide collections that ended up empty after dedup, otherwise render normally
+  filteredColls.filter(c => c.count > 0)
+               .forEach(c => grid.appendChild(makeCollCard(c, null)));
   showScreen('screen-main');
 }
 
@@ -92,6 +174,38 @@ function makeCollCard(collection, variant) {
       }
     });
   }
+
+  // Random background art from a game inside this collection.
+  // Skip Whole Library (no single representative image makes sense).
+  // Only use Steam appids — non-Steam shortcuts don't have CDN header images.
+  // Tries up to 5 randomly-shuffled candidates so age-gated / delisted games
+  // don't leave the card blank — moves to the next candidate on each failure.
+  if (variant !== 'library') {
+    const steamIds = (collection.appids || []).filter(id => !isLikelyNonSteam(id));
+    if (steamIds.length > 0) {
+      const candidates = [...steamIds].sort(() => Math.random() - 0.5).slice(0, 5);
+      let ci = 0;
+      const tryNextGame = () => {
+        if (ci >= candidates.length) return;   // all candidates exhausted
+        const pick = candidates[ci++];
+        const urls = headerUrls(pick);
+        let ui = 0;
+        const tryNextUrl = () => {
+          if (ui >= urls.length) { tryNextGame(); return; }  // all CDNs for this game failed
+          const img = new Image();
+          img.onload = () => {
+            card.style.backgroundImage = `url('${img.src}')`;
+            card.classList.add('has-bg-art');
+          };
+          img.onerror = () => { ui++; tryNextUrl(); };
+          img.src = urls[ui];
+        };
+        tryNextUrl();
+      };
+      tryNextGame();
+    }
+  }
+
   return card;
 }
 
@@ -218,7 +332,12 @@ function getAudioCtx() {
   return _audioCtx;
 }
 
+// User-controlled sound toggle (mirrored from backend get_sound_enabled).
+// Loaded on init(); switched live when the Settings checkbox changes.
+let soundEnabled = true;
+
 function playTick(speedFraction) {
+  if (!soundEnabled) return;
   try {
     const ctx  = getAudioCtx();
     const osc  = ctx.createOscillator();
@@ -239,6 +358,7 @@ function playTick(speedFraction) {
 }
 
 function playLanding() {
+  if (!soundEnabled) return;
   try {
     const ctx   = getAudioCtx();
     const notes = [523.25, 659.25, 783.99]; // C5 E5 G5
@@ -397,6 +517,8 @@ async function doSpin(forceNonSteam = false) {
   let winner;
   if (spinMode === 'collection') {
     winner = randItem(allCollections);
+  } else if (spinMode === 'platform') {
+    winner = randItem(currentPlatformGames);
   } else {
     const candidates = forceNonSteam
       ? currentCollection.appids.filter(isLikelyNonSteam)
@@ -409,8 +531,10 @@ async function doSpin(forceNonSteam = false) {
 
   // Pre-fetch backend art so the reel winner card shows the reliable
   // Python-fetched image (handles age-gated games that CDN blocks in WebView2).
-  if (api && spinMode === 'game' && !isLikelyNonSteam(winner)) {
-    api.get_game_art(String(winner)).then(result => {
+  const _artAppid = spinMode === 'platform' && winner.platform === 'steam'
+    ? winner.raw_id : (spinMode === 'game' ? winner : null);
+  if (api && _artAppid !== null && !isLikelyNonSteam(_artAppid)) {
+    api.get_game_art(String(_artAppid)).then(result => {
       if (myToken !== currentSpinToken) return;
       if (result.status !== 'ok') return;
       const winnerCard = document.querySelector('#reel .reel-winner');
@@ -426,19 +550,37 @@ async function doSpin(forceNonSteam = false) {
 
   // Pre-fetch HLTB during the spin so data is ready the moment the winner panel appears.
   // Chain: get_game_name (usually instant from cache) → get_hltb_data (network, ~3s).
-  hltbSpinAppid    = winner;
-  hltbSpinPromise  = null;
+  hltbSpinAppid   = spinMode === 'platform' ? winner.id : winner;
+  hltbSpinPromise = null;
   if (api && spinMode === 'game' && !isLikelyNonSteam(winner)) {
+    // Steam game mode — name must be fetched first
     hltbSpinPromise = (async () => {
       const nameResult = await api.get_game_name(String(winner));
       if (myToken !== currentSpinToken) return null;
       if (nameResult.status !== 'ok') return null;
       return api.get_hltb_data(String(winner), nameResult.name);
     })();
+  } else if (api && spinMode === 'platform' && winner.name) {
+    // GOG / Epic — name already known, go straight to HLTB
+    hltbSpinPromise = (async () => {
+      if (myToken !== currentSpinToken) return null;
+      return api.get_hltb_data(winner.id, winner.name);
+    })();
+  } else if (api && spinMode === 'platform' && winner.platform === 'steam'
+             && !isLikelyNonSteam(winner.raw_id)) {
+    // Steam game in All mode — fetch name first, then HLTB
+    hltbSpinPromise = (async () => {
+      const nameResult = await api.get_game_name(String(winner.raw_id));
+      if (myToken !== currentSpinToken) return null;
+      if (nameResult.status !== 'ok') return null;
+      return api.get_hltb_data(winner.id, nameResult.name);
+    })();
   }
 
   if (spinMode === 'collection') {
     buildCollectionReel(allCollections, startFrom, winner);
+  } else if (spinMode === 'platform') {
+    buildPlatformReel(currentPlatformGames, startFrom, winner);
   } else {
     buildGameReel(currentCollection.appids, startFrom, winner);
   }
@@ -451,8 +593,9 @@ async function doSpin(forceNonSteam = false) {
   await delay(650);
 
   // Show winner info below the reel — no animation, no stage swap
-  if (spinMode === 'collection') showCollectionWinner(winner);
-  else                           showGameWinner(winner);
+  if      (spinMode === 'collection') showCollectionWinner(winner);
+  else if (spinMode === 'platform')   showPlatformWinner(winner);
+  else                                showGameWinner(winner);
 
   document.getElementById('footer-spin').classList.add('hidden');
   document.getElementById('footer-winner').classList.remove('hidden');
@@ -537,8 +680,9 @@ async function spinAgain() {
   currentWinnerAppid = null;
 
   // Pre-build so the reel shows the previous winner at position 0 briefly
-  if (spinMode === 'collection') buildCollectionReel(allCollections, startFrom);
-  else                           buildGameReel(currentCollection.appids, startFrom);
+  if      (spinMode === 'collection') buildCollectionReel(allCollections, startFrom);
+  else if (spinMode === 'platform')   buildPlatformReel(currentPlatformGames, startFrom);
+  else                                buildGameReel(currentCollection.appids, startFrom);
 
   await delay(80);
   doSpin();
@@ -595,6 +739,19 @@ async function browseForFile() {
   handleLoadResult(result);
 }
 
+// Show feedback after a GOG / Epic launch so the user can verify the right URI
+// is being attempted.  Most failures here are silent at the OS level (Windows
+// just opens the wrong launcher or does nothing), so surfacing the URI helps
+// diagnose URI-scheme issues.
+function reportLaunch(result) {
+  if (!result) return;
+  if (result.status === 'ok') {
+    showToast(`Launching: ${result.uri || 'game'}`);
+  } else {
+    showToast(`Launch failed: ${result.message || result.status}`, 'error');
+  }
+}
+
 function showToast(message, kind = 'success') {
   let toast = document.getElementById('toast');
   if (!toast) {
@@ -632,6 +789,26 @@ async function excludeWinningGame(appid) {
   spinAgain();
 }
 
+// Sibling for GOG/Epic winners — the Steam version above uses integer appids
+// and re-fetches Steam collections; this one operates on the platform pool
+// and uses the prefixed-ID exclude list.
+async function excludePlatformWinningGame(game) {
+  if (!api) return;
+  const r = await api.toggle_exclude_platform_game(game.id, game.name || '');
+  if (r.status !== 'ok') {
+    showToast(`Failed: ${r.message || r.status}`, 'error');
+    return;
+  }
+  // Drop the game from the current spin pool so spinAgain doesn't pick it
+  currentPlatformGames = currentPlatformGames.filter(g => g.id !== game.id);
+  // Also clean it out of the cached lists so re-entering the tab is consistent
+  if (game.platform === 'gog')  gogGames  = gogGames.filter(g => g.id !== game.id);
+  if (game.platform === 'epic') epicGames = epicGames.filter(g => g.id !== game.id);
+  prevGameWinner = null;
+  showToast(`Excluded "${game.name}" from future spins`);
+  spinAgain();
+}
+
 async function openSettings() {
   if (!api) { showToast('Backend not available', 'error'); return; }
   const r = await api.get_settings();
@@ -640,7 +817,286 @@ async function openSettings() {
     return;
   }
   renderSettings(r);
+  await refreshEpicSettings();
+  await refreshDedupSettings();
+  await refreshEditionPreference();
+  await refreshSoundSettings();
   showScreen('screen-settings');
+}
+
+async function refreshSoundSettings() {
+  if (!api) return;
+  const r = await api.get_sound_enabled();
+  if (r.status !== 'ok') return;
+  soundEnabled = !!r.enabled;
+  const cb = document.getElementById('sound-enabled');
+  if (cb) cb.checked = soundEnabled;
+}
+
+// ── Edition preference (same-game variants like Mass Effect vs Legendary) ──
+
+async function refreshEditionPreference() {
+  if (!api) return;
+  const r = await api.get_edition_preference();
+  if (r.status !== 'ok') return;
+  document.querySelectorAll('input[name="edition-pref"]').forEach(el => {
+    el.checked = (el.value === r.preference);
+  });
+  await refreshEditionPreview();
+}
+
+async function refreshEditionPreview() {
+  const preview = document.getElementById('edition-pref-preview');
+  if (!api || !preview) return;
+  const r = await api.get_edition_preference();
+  if (r.preference === 'both') {
+    preview.innerHTML = 'Currently disabled — every edition you own shows up independently.';
+    return;
+  }
+  preview.innerHTML = 'Computing edition variants…';
+  const filter = await api.get_edition_filter();
+  if (filter.status !== 'ok') {
+    preview.textContent = 'Could not compute edition variants.';
+    return;
+  }
+  const c = filter.counts || {};
+  const total = (c.steam_hidden || 0) + (c.gog_hidden || 0) + (c.epic_hidden || 0);
+  if (total === 0) {
+    preview.innerHTML = 'No multi-edition titles detected in your library yet.';
+    return;
+  }
+  const parts = [];
+  if (c.steam_hidden) parts.push(`<strong>${c.steam_hidden}</strong> on Steam`);
+  if (c.gog_hidden)   parts.push(`<strong>${c.gog_hidden}</strong> on GOG`);
+  if (c.epic_hidden)  parts.push(`<strong>${c.epic_hidden}</strong> on Epic`);
+  const kind = r.preference === 'enhanced' ? 'original' : 'enhanced';
+  preview.innerHTML = `Hiding ${parts.join(', ')} ${kind} edition${total === 1 ? '' : 's'} — keeping the other variant.`;
+}
+
+// ── Cross-platform duplicate settings ──────────────────────────────────────
+
+const _PLATFORM_LABELS = { steam: 'Steam', gog: 'GOG', epic: 'Epic' };
+
+async function refreshDedupSettings() {
+  if (!api) return;
+  const s = await api.get_dedup_settings();
+  if (s.status !== 'ok') return;
+
+  document.getElementById('dedup-enabled').checked = !!s.enabled;
+  const block = document.getElementById('dedup-priority-block');
+  block.classList.toggle('enabled', !!s.enabled);
+
+  renderDedupPriorityList(s.priority);
+  await refreshDedupPreview();
+}
+
+function renderDedupPriorityList(priority) {
+  const list = document.getElementById('dedup-priority-list');
+  list.innerHTML = '';
+  priority.forEach((p, idx) => {
+    const li = document.createElement('li');
+    li.className = 'dedup-priority-item';
+    li.innerHTML = `
+      <span class="dedup-priority-rank">${idx + 1}</span>
+      <span class="dedup-priority-name">${esc(_PLATFORM_LABELS[p] || p)}</span>
+      <span class="dedup-priority-btns">
+        <button class="dedup-priority-btn" data-dir="up"   ${idx === 0 ? 'disabled' : ''} title="Move up">&uarr;</button>
+        <button class="dedup-priority-btn" data-dir="down" ${idx === priority.length - 1 ? 'disabled' : ''} title="Move down">&darr;</button>
+      </span>
+    `;
+    li.querySelectorAll('.dedup-priority-btn').forEach(btn => {
+      btn.addEventListener('click', () => moveDedupPriority(p, btn.dataset.dir));
+    });
+    list.appendChild(li);
+  });
+}
+
+async function moveDedupPriority(platform, direction) {
+  if (!api) return;
+  const s = await api.get_dedup_settings();
+  if (s.status !== 'ok') return;
+  const priority = [...s.priority];
+  const idx = priority.indexOf(platform);
+  if (idx === -1) return;
+  const swapWith = direction === 'up' ? idx - 1 : idx + 1;
+  if (swapWith < 0 || swapWith >= priority.length) return;
+  [priority[idx], priority[swapWith]] = [priority[swapWith], priority[idx]];
+  await api.set_dedup_settings(s.enabled, priority);
+  await refreshDedupSettings();
+  // Clear cached filter so the next platform load re-applies
+  invalidateDedupCache();
+}
+
+async function refreshDedupPreview() {
+  const preview = document.getElementById('dedup-preview');
+  if (!api || !preview) return;
+  const s = await api.get_dedup_settings();
+  if (!s.enabled) {
+    preview.innerHTML = 'Currently disabled — every game shows up on every platform tab where you own it.';
+    return;
+  }
+
+  // Heads-up: the first time dedup runs we need to download the bulk Steam
+  // name database (~30 sec from SteamSpy). After that it's cached for a week.
+  const status = await api.get_steam_names_status();
+  if (!status.cached) {
+    preview.innerHTML =
+      '<strong>One-time setup:</strong> Building Steam game name database… ' +
+      'this fetches ~30,000 game names from SteamSpy and takes about 30 seconds. ' +
+      'Subsequent loads are instant.';
+  } else {
+    preview.innerHTML = 'Computing duplicates…';
+  }
+
+  const filter = await api.get_duplicate_filter();
+  if (filter.status !== 'ok') {
+    preview.textContent = 'Could not compute duplicates.';
+    return;
+  }
+  const c = filter.counts || {};
+  const total = (c.steam_hidden || 0) + (c.gog_hidden || 0) + (c.epic_hidden || 0);
+  if (total === 0) {
+    preview.innerHTML = 'No cross-platform duplicates detected in your library.';
+    return;
+  }
+  const parts = [];
+  if (c.steam_hidden) parts.push(`<strong>${c.steam_hidden}</strong> on Steam`);
+  if (c.gog_hidden)   parts.push(`<strong>${c.gog_hidden}</strong> on GOG`);
+  if (c.epic_hidden)  parts.push(`<strong>${c.epic_hidden}</strong> on Epic`);
+  preview.innerHTML = `Hiding ${parts.join(', ')} — duplicates present on a higher-ranked platform.`;
+}
+
+// ── Epic source picker + OAuth flow ────────────────────────────────────────
+
+async function refreshEpicSettings() {
+  if (!api) return;
+  const [src, status] = await Promise.all([
+    api.get_epic_source(),
+    api.epic_oauth_status(),
+  ]);
+
+  // Source radio
+  const value = (src && src.source) || 'galaxy';
+  const radio = document.querySelector(`input[name="epic-source"][value="${value}"]`);
+  if (radio) radio.checked = true;
+
+  // Connection status row
+  const statusEl   = document.getElementById('epic-connection-status');
+  const connectBtn = document.getElementById('epic-connect-btn');
+  const disconnect = document.getElementById('epic-disconnect-btn');
+
+  if (status && status.connected) {
+    const who = status.displayName ? esc(status.displayName) : 'Epic account';
+    statusEl.innerHTML = `Connected as <strong>${who}</strong>`;
+    statusEl.classList.add('connected');
+    connectBtn.classList.add('hidden');
+    disconnect.classList.remove('hidden');
+  } else {
+    statusEl.textContent = 'Not connected to Epic';
+    statusEl.classList.remove('connected');
+    connectBtn.classList.remove('hidden');
+    disconnect.classList.add('hidden');
+  }
+
+  // The Connect button is only meaningful when the source is set to 'oauth' —
+  // otherwise it's a no-op for the active source.  Dim it but still allow
+  // pre-connecting before flipping the radio.
+  connectBtn.style.opacity = value === 'oauth' ? '1' : '0.7';
+}
+
+async function handleEpicSourceChange(newSource) {
+  if (!api) return;
+  const r = await api.set_epic_source(newSource);
+  if (r.status === 'ok') {
+    showToast(`Epic source: ${newSource === 'oauth' ? 'Direct Epic' : 'GOG Galaxy'}`);
+    // If switching to OAuth and not yet connected, auto-open the connect modal
+    if (newSource === 'oauth') {
+      const s = await api.epic_oauth_status();
+      if (!s.connected) openEpicAuthModal();
+    }
+    refreshEpicSettings();
+  } else {
+    showToast(`Failed: ${r.message || r.status}`, 'error');
+  }
+}
+
+async function disconnectEpic() {
+  if (!api) return;
+  if (!confirm('Disconnect Epic account? You can reconnect anytime.')) return;
+  const r = await api.epic_oauth_disconnect();
+  if (r.status === 'ok') {
+    showToast('Epic disconnected');
+    refreshEpicSettings();
+  }
+}
+
+// ── OAuth modal ───────────────────────────────────────────────────────────
+
+function openEpicAuthModal() {
+  document.getElementById('epic-auth-modal').classList.remove('hidden');
+  document.getElementById('epic-auth-code').value = '';
+  setEpicAuthStatus('', '');
+}
+
+function closeEpicAuthModal() {
+  document.getElementById('epic-auth-modal').classList.add('hidden');
+}
+
+function setEpicAuthStatus(text, kind) {
+  const el = document.getElementById('epic-auth-status');
+  el.textContent = text;
+  el.className = 'epic-auth-status' + (kind ? ' ' + kind : '');
+}
+
+// Accept either a raw code OR a pasted JSON blob — extract authorizationCode
+// from the latter so the user doesn't have to surgically copy just the value.
+function extractAuthCode(input) {
+  const trimmed = (input || '').trim();
+  if (!trimmed) return '';
+  // Try JSON parse first — Epic returns a JSON object with authorizationCode
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (parsed && typeof parsed === 'object' && parsed.authorizationCode) {
+      return String(parsed.authorizationCode).trim();
+    }
+  } catch (_) { /* not JSON — fall through */ }
+  // Fall back to assuming the user pasted just the code
+  return trimmed;
+}
+
+async function openEpicLoginPage() {
+  if (!api) return;
+  const r = await api.epic_oauth_url();
+  if (r.status === 'ok' && r.url) {
+    // Open in the user's default browser via Windows shell
+    await api.open_external_url(r.url);
+    setEpicAuthStatus('Login page opened in browser', '');
+  }
+}
+
+async function verifyEpicAuthCode() {
+  if (!api) return;
+  const raw  = document.getElementById('epic-auth-code').value;
+  const code = extractAuthCode(raw);
+  if (!code) {
+    setEpicAuthStatus('Paste the authorization code first', 'error');
+    return;
+  }
+  setEpicAuthStatus('Connecting…', '');
+  const r = await api.epic_oauth_complete(code);
+  if (r.status === 'ok') {
+    const who = r.displayName ? r.displayName : 'your Epic account';
+    setEpicAuthStatus(`Connected as ${who}!`, 'success');
+    // Make sure the source is set to oauth now that auth succeeded
+    await api.set_epic_source('oauth');
+    setTimeout(() => {
+      closeEpicAuthModal();
+      refreshEpicSettings();
+      showToast(`Epic connected: ${who}`);
+    }, 900);
+  } else {
+    setEpicAuthStatus(r.message || 'Connection failed', 'error');
+  }
 }
 
 function renderSettings(data) {
@@ -673,14 +1129,16 @@ function renderSettings(data) {
     });
   }
 
-  if (!data.excluded_games.length) {
-    excludedList.innerHTML = `<div class="settings-empty">No games excluded. Use "Don't show again" on the winner panel to exclude one.</div>`;
+  // Steam excludes (numeric appid)
+  const platformExcluded = data.excluded_platform_games || [];
+  if (!data.excluded_games.length && !platformExcluded.length) {
+    excludedList.innerHTML = `<div class="settings-empty">No games excluded. Use "Exclude from Future Spins" on the winner panel to exclude one.</div>`;
   } else {
     data.excluded_games.forEach(g => {
       const row = document.createElement('div');
       row.className = 'settings-row';
       row.innerHTML = `
-        <div><span class="settings-row-label">${esc(g.name)}</span><span class="settings-row-count">appid ${g.appid}</span></div>
+        <div><span class="settings-row-label">${esc(g.name)}</span><span class="settings-row-count">Steam · appid ${g.appid}</span></div>
         <button class="settings-row-btn">Include again</button>
       `;
       row.querySelector('button').addEventListener('click', async () => {
@@ -695,26 +1153,85 @@ function renderSettings(data) {
       });
       excludedList.appendChild(row);
     });
+    // GOG/Epic excludes (prefixed string ID)
+    platformExcluded.forEach(g => {
+      const row = document.createElement('div');
+      row.className = 'settings-row';
+      const platformLabel = g.platform === 'gog' ? 'GOG' : g.platform === 'epic' ? 'Epic' : g.platform;
+      row.innerHTML = `
+        <div><span class="settings-row-label">${esc(g.name)}</span><span class="settings-row-count">${platformLabel}</span></div>
+        <button class="settings-row-btn">Include again</button>
+      `;
+      row.querySelector('button').addEventListener('click', async () => {
+        const r = await api.toggle_exclude_platform_game(g.id, g.name);
+        if (r.status === 'ok') {
+          openSettings();
+          showToast(`"${g.name}" included again`);
+        }
+      });
+      excludedList.appendChild(row);
+    });
   }
 }
+
+// ── Per-platform user badges ────────────────────────────────────────────────
+//
+// Cached at module level so tab switches don't trigger refetches.  Populated
+// once at startup; cleared+rebuilt when reload is called.
+
+let platformUserInfo = null;   // { steam: {name,avatar}, gog: {...}, epic: {...} }
 
 async function loadUserInfo() {
   if (!api) return;
   try {
-    const r = await api.get_user_info();
+    const r = await api.get_platform_user_info();
     if (r.status !== 'ok') return;
-    const badge = document.getElementById('user-badge');
-    const av    = document.getElementById('user-avatar');
-    const name  = document.getElementById('user-name');
-    name.textContent = r.persona_name || 'Steam User';
-    if (r.avatar) {
-      av.src = r.avatar;
-      av.style.display = '';
-    } else {
-      av.style.display = 'none';
-    }
-    badge.classList.remove('hidden');
+    platformUserInfo = {
+      steam: r.steam || {name: null, avatar: null},
+      gog:   r.gog   || {name: null, avatar: null},
+      epic:  r.epic  || {name: null, avatar: null},
+    };
+    renderUserBadgeFor(currentPlatform);
   } catch (_) { /* silently ignore */ }
+}
+
+// Render the user badge for the active platform. On LITF we show all three.
+function renderUserBadgeFor(platform) {
+  const badge = document.getElementById('user-badge');
+  if (!badge || !platformUserInfo) return;
+
+  // Single platform — name + avatar (or placeholder dot if no avatar)
+  const single = (info, label) => {
+    const name = info.name || `${label} User`;
+    const av   = info.avatar
+      ? `<img src="${esc(info.avatar)}" alt="">`
+      : `<span class="user-avatar-fallback">${label[0]}</span>`;
+    return `${av}<span>${esc(name)}</span>`;
+  };
+
+  if (platform === 'all') {
+    // Stacked: Steam · GOG · Epic, all three at once for the Leave It To Fate spin
+    const parts = [];
+    if (platformUserInfo.steam.name) parts.push(['S', platformUserInfo.steam]);
+    if (platformUserInfo.gog.name)   parts.push(['G', platformUserInfo.gog]);
+    if (platformUserInfo.epic.name)  parts.push(['E', platformUserInfo.epic]);
+    if (parts.length === 0) { badge.classList.add('hidden'); return; }
+    badge.classList.add('user-badge-stacked');
+    badge.innerHTML = parts.map(([lbl, info]) => {
+      const av = info.avatar
+        ? `<img src="${esc(info.avatar)}" alt="" title="${esc(info.name)}">`
+        : `<span class="user-avatar-fallback" title="${esc(info.name)}">${lbl}</span>`;
+      return `<span class="user-badge-mini">${av}<span>${esc(info.name)}</span></span>`;
+    }).join('');
+    badge.classList.remove('hidden');
+    return;
+  }
+
+  badge.classList.remove('user-badge-stacked');
+  const info = platformUserInfo[platform];
+  if (!info) { badge.classList.add('hidden'); return; }
+  badge.innerHTML = single(info, ({steam:'Steam',gog:'GOG',epic:'Epic'}[platform] || ''));
+  badge.classList.remove('hidden');
 }
 
 // ── Manage Non-Steam Shortcuts ────────────────────────────────────────────
@@ -872,16 +1389,35 @@ function renderManageDetail() {
 
 async function reloadCollections() {
   if (!api) return;
+  // Library composition may have changed (new game purchased, etc.) so the
+  // dedup AND edition decisions need to be recomputed from scratch.
+  invalidateAllExcludes();
   const btn = document.getElementById('btn-reload-main');
   btn.classList.add('spinning');
   btn.disabled = true;
 
-  // Even if Python returns in 5ms, we want the user to actually SEE the spin.
-  const [result] = await Promise.all([
-    api.reload_collections(),
-    delay(800),
-  ]);
+  const grid  = document.getElementById('collection-grid');
+  const empty = document.getElementById('empty-state');
 
+  if (currentPlatform !== 'steam') {
+    // Refresh GOG / Epic / All — re-fetch in parallel with the spinner delay
+    grid.innerHTML = '';
+    await Promise.all([
+      (async () => {
+        if (currentPlatform === 'gog')  await loadGogGrid(grid, empty);
+        if (currentPlatform === 'epic') await loadEpicGrid(grid, empty);
+        // 'all' is the LITF action button — re-running it means re-spinning
+        if (currentPlatform === 'all')  await leaveItToFate();
+      })(),
+      delay(800),
+    ]);
+    btn.classList.remove('spinning');
+    btn.disabled = false;
+    return;
+  }
+
+  // Steam: reload the collections file, keep the 800ms minimum for the animation
+  const [result] = await Promise.all([api.reload_collections(), delay(800)]);
   btn.classList.remove('spinning');
   btn.disabled = false;
 
@@ -1077,6 +1613,445 @@ async function debugCurrentCollection() {
   showDebugModal(out);
 }
 
+// ── Platform switching ─────────────────────────────────────────────────────
+
+async function switchPlatform(platform) {
+  currentPlatform = platform;
+
+  // Update tab highlights
+  document.querySelectorAll('.platform-tab').forEach(t => t.classList.remove('active'));
+  document.getElementById(`tab-${platform}`).classList.add('active');
+
+  // Swap the user badge for the active platform
+  renderUserBadgeFor(platform);
+
+  // Collection Roulette only applies to Steam
+  document.getElementById('btn-coll-roulette').style.display =
+    platform === 'steam' ? '' : 'none';
+
+  if (platform === 'steam') {
+    renderCollections(allCollections, allShortcutAppids, allHiddenCollections);
+    return;
+  }
+
+  const grid  = document.getElementById('collection-grid');
+  const empty = document.getElementById('empty-state');
+  grid.innerHTML = '';
+  empty.classList.add('hidden');
+  showScreen('screen-main');
+
+  if (platform === 'gog')  await loadGogGrid(grid, empty);
+  if (platform === 'epic') await loadEpicGrid(grid, empty);
+}
+
+// ── Leave It To Fate — combined-platform auto-spinning button ──────────────
+//
+// Behaves more like an action button than a tab: clicking it fetches every
+// available game across Steam, GOG, and Epic, jumps straight to the spin
+// screen, and fires off the wheel automatically.  Each click = a fresh spin.
+
+async function leaveItToFate() {
+  // Visual: light up the LITF tab, dim the others
+  document.querySelectorAll('.platform-tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('tab-litf').classList.add('active');
+  document.getElementById('btn-coll-roulette').style.display = 'none';
+  currentPlatform = 'all';
+  renderUserBadgeFor('all');
+
+  // Fetch GOG + Epic in parallel; Steam data is already loaded in memory
+  const [gogResult, epicResult] = api
+    ? await Promise.all([api.get_gog_games(), api.get_epic_games()])
+    : [{status: 'ok', games: []}, {status: 'ok', games: []}];
+  gogGames  = gogResult.status  === 'ok' ? gogResult.games  : [];
+  epicGames = epicResult.status === 'ok' ? epicResult.games : [];
+
+  let steamIds = [...new Set([
+    ...allCollections.flatMap(c => c.appids),
+    ...allShortcutAppids,
+  ])].map(id => ({ id: `steam_${id}`, raw_id: id, name: null, platform: 'steam' }));
+
+  // Apply cross-platform dedup if enabled
+  const filteredSteam = await filterDuplicates(steamIds);
+  const filteredGog   = await filterDuplicates(gogGames);
+  const filteredEpic  = await filterDuplicates(epicGames);
+  // Mutate module-level lists so the spin sources match what we just spawned
+  gogGames  = filteredGog;
+  epicGames = filteredEpic;
+
+  const allGames = [...filteredSteam, ...filteredGog, ...filteredEpic];
+  if (allGames.length === 0) {
+    showToast('No games found across any platform', 'error');
+    return;
+  }
+
+  // Wire up the spin screen for the combined pool
+  spinMode             = 'platform';
+  currentPlatformGames = allGames;
+  prevGameWinner       = null;   // never start the reel on a stale game
+  pendingStartFrom     = null;
+
+  document.getElementById('spin-coll-name').textContent  = 'Leave It To Fate';
+  const parts = [];
+  if (steamIds.length)  parts.push(`${steamIds.length.toLocaleString()} Steam`);
+  if (gogGames.length)  parts.push(`${gogGames.length.toLocaleString()} GOG`);
+  if (epicGames.length) parts.push(`${epicGames.length.toLocaleString()} Epic`);
+  document.getElementById('spin-coll-count').textContent = parts.join(' · ');
+
+  document.getElementById('footer-spin').classList.remove('hidden');
+  document.getElementById('footer-winner').classList.add('hidden');
+  document.getElementById('btn-spin').disabled    = false;
+  document.getElementById('btn-spin').textContent = 'SPIN';
+  currentWinnerAppid = null;
+
+  buildPlatformReel(allGames);
+  showScreen('screen-spin');
+
+  // Brief pause so the user sees the reel land at rest, then fire automatically
+  await delay(280);
+  doSpin();
+}
+
+async function loadGogGrid(grid, empty) {
+  if (!api) { empty.classList.remove('hidden'); return; }
+  const [result, tagResult] = await Promise.all([
+    api.get_gog_games(),
+    api.get_galaxy_collections('gog'),
+  ]);
+  if (result.status === 'ok' && result.games.length > 0) {
+    gogGames = await filterDuplicates(result.games);
+    grid.appendChild(makePlatformCard('gog', gogGames));
+    appendTagCollections(grid, 'gog', tagResult, gogGames);
+    empty.classList.add('hidden');
+  } else {
+    gogGames = [];
+    empty.innerHTML = '<p>No GOG games found. GOG Galaxy must be installed with at least one game.</p>';
+    empty.classList.remove('hidden');
+  }
+}
+
+async function loadEpicGrid(grid, empty) {
+  if (!api) { empty.classList.remove('hidden'); return; }
+  const [result, tagResult] = await Promise.all([
+    api.get_epic_games(),
+    api.get_galaxy_collections('epic'),
+  ]);
+  if (result.status === 'ok' && result.games.length > 0) {
+    epicGames = await filterDuplicates(result.games);
+    grid.appendChild(makePlatformCard('epic', epicGames));
+    appendTagCollections(grid, 'epic', tagResult, epicGames);
+    empty.classList.add('hidden');
+
+    // If we're only seeing installed games, suggest the Galaxy integration
+    // so the user can get their full owned library too.
+    if (result.source === 'manifests') {
+      const note = document.createElement('div');
+      note.className = 'platform-hint';
+      note.innerHTML =
+        `Only showing <strong>installed</strong> Epic games. ` +
+        `To see your full owned library, install the ` +
+        `<strong>Epic Games integration</strong> in GOG Galaxy ` +
+        `(Settings → Integrations → search "Epic").`;
+      grid.appendChild(note);
+    }
+  } else {
+    epicGames = [];
+    empty.innerHTML =
+      '<p>No Epic games found.</p>' +
+      '<p class="hint">For your <strong>full owned Epic library</strong>, install the ' +
+      'Epic Games integration in GOG Galaxy (Settings → Integrations → search "Epic"). ' +
+      'Without it, only installed Epic games will show up.</p>';
+    empty.classList.remove('hidden');
+  }
+}
+
+// Append per-tag "collection" cards alongside the full-library card. Tags come
+// from Galaxy's UserReleaseTags table (whatever the user has manually labeled
+// games with in GOG Galaxy). Each tag becomes its own clickable card that
+// spins only within that tag's games.
+function appendTagCollections(grid, platform, tagResult, games) {
+  if (!tagResult || tagResult.status !== 'ok' || !tagResult.collections.length) return;
+  if (!games || !games.length) return;
+
+  // Build a lookup so we can match a Galaxy releaseKey to one of our game
+  // objects. For Epic, Galaxy keys on app_name (epic_<AppName>) while our
+  // OAuth library keys on catalogItemId — so we have to try both.
+  const byKey = {};
+  games.forEach(g => {
+    if (g.id) byKey[g.id] = g;
+    if (platform === 'epic' && g.app_name) byKey[`epic_${g.app_name}`] = g;
+  });
+
+  tagResult.collections.forEach(tagColl => {
+    const tagGames = tagColl.appids
+      .map(k => byKey[k])
+      .filter(Boolean);
+    if (!tagGames.length) return;
+    grid.appendChild(makeTagCard(platform, tagColl.name, tagGames));
+  });
+}
+
+function makeTagCard(platform, tagName, games) {
+  const card = document.createElement('div');
+  const CLASS = { gog: 'coll-card-gog', epic: 'coll-card-epic' }[platform] || '';
+  card.className = `coll-card ${CLASS} coll-card-tag`;
+  card.innerHTML = `
+    <div class="coll-name">${esc(tagName)}</div>
+    <div class="coll-count">${games.length.toLocaleString()} game${games.length === 1 ? '' : 's'}</div>
+  `;
+  card.addEventListener('click', () => openPlatformSpin(platform, games));
+
+  // Pick a random game's art as the card background, just like the full-library card
+  const withArt = games.filter(g => g.image_background);
+  if (withArt.length > 0) {
+    const candidates = [...withArt].sort(() => Math.random() - 0.5).slice(0, 5);
+    let i = 0;
+    const tryNext = () => {
+      if (i >= candidates.length) return;
+      const url = candidates[i++].image_background;
+      const img = new Image();
+      img.onload = () => {
+        card.style.backgroundImage = `url('${url}')`;
+        card.classList.add('has-bg-art');
+      };
+      img.onerror = tryNext;
+      img.src = url;
+    };
+    tryNext();
+  }
+  return card;
+}
+
+function makePlatformCard(platform, games, subtitle = null) {
+  const card = document.createElement('div');
+  const NAMES   = { gog: 'GOG Library', epic: 'Epic Library', all: 'All Libraries' };
+  const CLASSES = { gog: 'coll-card-gog', epic: 'coll-card-epic', all: 'coll-card-all' };
+  card.className = `coll-card ${CLASSES[platform] || ''}`;
+
+  const sub = subtitle !== null
+    ? subtitle
+    : `${games.length.toLocaleString()} game${games.length === 1 ? '' : 's'}`;
+
+  card.innerHTML = `
+    <div class="coll-name">${esc(NAMES[platform] || platform)}</div>
+    <div class="coll-count">${esc(sub)}</div>
+  `;
+  card.addEventListener('click', () => openPlatformSpin(platform, games));
+
+  // Background art: try a random game's cover.  For GOG/Epic we have Galaxy-
+  // enriched image_background URLs; for 'all' mode (legacy code path) we use
+  // Steam header images.
+  const artCandidates = (() => {
+    if (platform === 'gog' || platform === 'epic') {
+      const withArt = games.filter(g => g.image_background);
+      return [...withArt].sort(() => Math.random() - 0.5).slice(0, 5)
+                         .map(g => [g.image_background]);
+    }
+    if (platform === 'all') {
+      const steamGames = games.filter(g => g.platform === 'steam' && !isLikelyNonSteam(g.raw_id));
+      return [...steamGames].sort(() => Math.random() - 0.5).slice(0, 5)
+                            .map(g => headerUrls(g.raw_id));
+    }
+    return [];
+  })();
+  if (artCandidates.length > 0) {
+    let ci = 0;
+    const tryNextGame = () => {
+      if (ci >= artCandidates.length) return;
+      const urls = artCandidates[ci++];
+      let ui = 0;
+      const tryNextUrl = () => {
+        if (ui >= urls.length) { tryNextGame(); return; }
+        const img = new Image();
+        img.onload = () => {
+          card.style.backgroundImage = `url('${img.src}')`;
+          card.classList.add('has-bg-art');
+        };
+        img.onerror = () => { ui++; tryNextUrl(); };
+        img.src = urls[ui];
+      };
+      tryNextUrl();
+    };
+    tryNextGame();
+  }
+  return card;
+}
+
+function openPlatformSpin(platform, games) {
+  spinMode             = 'platform';
+  currentPlatformGames = games;
+
+  const NAMES = { gog: 'GOG Library', epic: 'Epic Library', all: 'All Libraries' };
+  document.getElementById('spin-coll-name').textContent  = NAMES[platform] || platform;
+  document.getElementById('spin-coll-count').textContent =
+    `${games.length.toLocaleString()} game${games.length === 1 ? '' : 's'}`;
+
+  document.getElementById('footer-spin').classList.remove('hidden');
+  document.getElementById('footer-winner').classList.add('hidden');
+  document.getElementById('btn-spin').disabled    = false;
+  document.getElementById('btn-spin').textContent = 'SPIN';
+  currentWinnerAppid = null;
+
+  buildPlatformReel(games);
+  showScreen('screen-spin');
+}
+
+function buildPlatformReel(games, startFrom = null, forcedWinner = null) {
+  const winner = (forcedWinner && games.find(g => g.id === forcedWinner.id))
+    ? forcedWinner
+    : randItem(games);
+  const pool    = games.length > 1 ? games.filter(g => g.id !== winner.id) : games;
+  const fillers = Array.from({ length: N_FILLERS }, (_, i) =>
+    i === 0 && startFrom !== null ? startFrom : randItem(pool)
+  );
+  const sequence = [...fillers, winner];
+
+  const reel = document.getElementById('reel');
+  reel.innerHTML = '';
+  reel.style.transform = 'translateY(0)';
+  reel.style.filter    = '';
+
+  // Show platform badge only in mixed-platform (All) mode
+  const isMulti = new Set(games.map(g => g.platform)).size > 1;
+  const PLABELS = { gog: 'GOG', epic: 'Epic', steam: 'Steam' };
+
+  sequence.forEach((game, i) => {
+    const isWinner = i === sequence.length - 1;
+    const card = document.createElement('div');
+
+    if (game.platform === 'steam') {
+      // Steam games: use header image (same as regular game reel)
+      card.className = 'reel-card' + (isWinner ? ' reel-winner' : '');
+      if (isLikelyNonSteam(game.raw_id)) {
+        card.classList.add('non-steam-card');
+        card.appendChild(nonSteamPlaceholder('', game.raw_id));
+      } else {
+        const img = document.createElement('img');
+        img.alt = ''; img.draggable = false;
+        attachImgFallback(img, game.raw_id);
+        img.src = headerUrl(game.raw_id);
+        card.appendChild(img);
+      }
+    } else {
+      // GOG / Epic: use cover art if Galaxy enrichment provided one;
+      // otherwise fall back to a text card with the title + platform badge.
+      const imgUrl = game.image_background || game.image_vertical || '';
+      const badgeHtml = isMulti
+        ? `<span class="platform-badge platform-badge--${game.platform}">${PLABELS[game.platform] || ''}</span>`
+        : '';
+      if (imgUrl) {
+        card.className = 'reel-card reel-card-platform-img' + (isWinner ? ' reel-winner' : '');
+        const img = document.createElement('img');
+        img.alt = ''; img.draggable = false;
+        // Galaxy's image CDN sometimes 404s on a specific image — gracefully
+        // fall back to a text card so the reel doesn't show a broken icon.
+        img.onerror = () => {
+          card.className = 'reel-card reel-card-platform' + (isWinner ? ' reel-winner' : '');
+          card.innerHTML = `
+            <div class="reel-card-platform-inner">
+              <div class="platform-game-name">${esc(game.name || game.id)}</div>
+              ${badgeHtml}
+            </div>
+          `;
+        };
+        img.src = imgUrl;
+        card.appendChild(img);
+        if (isMulti) {
+          const badge = document.createElement('div');
+          badge.className = 'reel-card-platform-overlay';
+          badge.innerHTML = badgeHtml;
+          card.appendChild(badge);
+        }
+      } else {
+        card.className = 'reel-card reel-card-platform' + (isWinner ? ' reel-winner' : '');
+        card.innerHTML = `
+          <div class="reel-card-platform-inner">
+            <div class="platform-game-name">${esc(game.name || game.id)}</div>
+            ${badgeHtml}
+          </div>
+        `;
+      }
+    }
+    reel.appendChild(card);
+  });
+
+  return winner;
+}
+
+function showPlatformWinner(game) {
+  prevGameWinner     = game;   // spin-again re-uses this as startFrom
+  currentWinnerAppid = game.id;
+
+  // Show the Exclude button — wired to the GOG/Epic exclusion API
+  const exclBtn = document.getElementById('btn-exclude');
+  exclBtn.classList.remove('hidden');
+  exclBtn.onclick = () => excludePlatformWinningGame(game);
+
+  document.getElementById('winner-coll-card').classList.add('hidden');
+  document.getElementById('btn-spin-game').classList.add('hidden');
+  document.getElementById('btn-spin-again').textContent = 'Spin Again';
+
+  const nameEl  = document.getElementById('winner-name');
+  const metaEl  = document.getElementById('winner-meta');
+  const hltbRow = document.getElementById('hltb-row');
+  nameEl.classList.remove('hidden');
+  metaEl.textContent = ''; metaEl.classList.add('hidden');
+  if (hltbRow) { hltbRow.classList.add('hidden'); hltbRow.innerHTML = ''; }
+
+  const launchBtn = document.getElementById('btn-launch');
+  launchBtn.classList.remove('hidden');
+
+  // Build a meta line: "<Platform> · <playtime> played" (playtime optional)
+  const _platformMeta = (label, game) => {
+    const pretty = formatPlaytime(game.playtime_minutes || 0);
+    return pretty ? `${label} · ${pretty} played` : label;
+  };
+
+  if (game.platform === 'gog') {
+    nameEl.textContent = game.name;
+    metaEl.textContent = _platformMeta('GOG Galaxy', game);
+    metaEl.classList.remove('hidden');
+    launchBtn.onclick  = async () => {
+      if (!api) return;
+      const r = await api.launch_gog_game(game.raw_id, game.source);
+      reportLaunch(r);
+    };
+    if (game.name) loadHltbData(game.id, game.name);
+
+  } else if (game.platform === 'epic') {
+    nameEl.textContent = game.name;
+    metaEl.textContent = _platformMeta('Epic Games', game);
+    metaEl.classList.remove('hidden');
+    launchBtn.onclick  = async () => {
+      if (!api) return;
+      // app_name is present on OAuth-sourced games — lets us skip Galaxy
+      // and launch via Epic's own URI scheme directly.
+      const r = await api.launch_epic_game(game.raw_id, game.source, game.app_name || null);
+      reportLaunch(r);
+    };
+    if (game.name) loadHltbData(game.id, game.name);
+
+  } else {
+    // Steam game (from All mode) — fetch name + playtime async
+    nameEl.textContent = 'Loading…';
+    launchBtn.onclick  = () => api && api.launch_game(String(game.raw_id));
+    if (api) {
+      api.get_game_name(String(game.raw_id)).then(result => {
+        if (currentWinnerAppid !== game.id) return;
+        const name = result.status === 'ok' ? result.name : `App ${game.raw_id}`;
+        nameEl.textContent = name;
+        const pretty = formatPlaytime(result.playtime_minutes || 0);
+        metaEl.textContent = 'Steam' + (pretty ? ` · ${pretty} played` : '');
+        metaEl.classList.remove('hidden');
+        if (result.status === 'ok' && !isLikelyNonSteam(game.raw_id)) {
+          loadHltbData(game.id, name);
+        }
+      });
+    } else {
+      nameEl.textContent = `App ${game.raw_id}`;
+    }
+  }
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────
 
 let _initRan = false;
@@ -1101,7 +2076,11 @@ async function init() {
   document.getElementById('btn-browse-error').addEventListener('click', browseForFile);
   document.getElementById('btn-browse-pick').addEventListener('click',  browseForFile);
   document.getElementById('btn-reload-main').addEventListener('click',  reloadCollections);
-  document.getElementById('btn-back-to-main').addEventListener('click', () => showScreen('screen-main'));
+  // Back-to-main from spin: LITF has no grid to return to, so go to Steam tab
+  document.getElementById('btn-back-to-main').addEventListener('click', () => {
+    if (currentPlatform === 'all') switchPlatform('steam');
+    else                           showScreen('screen-main');
+  });
 
   // ☰ header menu — force inline styles via setProperty('...', '...', 'important')
   // so nothing in the cascade can override our show/hide.
@@ -1150,6 +2129,48 @@ async function init() {
     renderCollections(allCollections, allShortcutAppids, allHiddenCollections);
   });
 
+  // Epic source picker (radios)
+  document.querySelectorAll('input[name="epic-source"]').forEach(radio => {
+    radio.addEventListener('change', (e) => {
+      if (e.target.checked) handleEpicSourceChange(e.target.value);
+    });
+  });
+  // Connect / Disconnect buttons
+  document.getElementById('epic-connect-btn').addEventListener('click', openEpicAuthModal);
+  document.getElementById('epic-disconnect-btn').addEventListener('click', disconnectEpic);
+  // Sound on/off toggle (live — no need to revisit Settings to hear effect)
+  document.getElementById('sound-enabled').addEventListener('change', async (e) => {
+    if (!api) return;
+    soundEnabled = e.target.checked;
+    await api.set_sound_enabled(soundEnabled);
+  });
+
+  // Cross-platform duplicates: toggle handler
+  document.getElementById('dedup-enabled').addEventListener('change', async (e) => {
+    if (!api) return;
+    const s = await api.get_dedup_settings();
+    await api.set_dedup_settings(e.target.checked, s.priority);
+    await refreshDedupSettings();
+    invalidateDedupCache();
+  });
+
+  // Edition preference: any of the three radios
+  document.querySelectorAll('input[name="edition-pref"]').forEach(el => {
+    el.addEventListener('change', async () => {
+      if (!api || !el.checked) return;
+      await api.set_edition_preference(el.value);
+      invalidateEditionCache();
+      await refreshEditionPreview();
+    });
+  });
+  // OAuth modal controls
+  document.getElementById('epic-auth-close').addEventListener('click', closeEpicAuthModal);
+  document.getElementById('epic-auth-open').addEventListener('click', openEpicLoginPage);
+  document.getElementById('epic-auth-verify').addEventListener('click', verifyEpicAuthCode);
+  document.getElementById('epic-auth-modal').addEventListener('click', (e) => {
+    if (e.target.id === 'epic-auth-modal') closeEpicAuthModal();
+  });
+
   // Manage Shortcuts screen
   document.getElementById('btn-back-manage').addEventListener('click', () => {
     renderCollections(allCollections, allShortcutAppids, allHiddenCollections);
@@ -1157,10 +2178,20 @@ async function init() {
   document.getElementById('manage-search').addEventListener('input', (e) => {
     renderManageList(e.target.value);
   });
+  // Platform tab switchers
+  ['steam', 'gog', 'epic'].forEach(p => {
+    document.getElementById(`tab-${p}`).addEventListener('click', () => switchPlatform(p));
+  });
+  // Leave It To Fate — action button, not a tab destination
+  document.getElementById('tab-litf').addEventListener('click', leaveItToFate);
+
   document.getElementById('btn-coll-roulette').addEventListener('click', openCollectionRoulette);
   document.getElementById('btn-spin').addEventListener('click',          () => doSpin(false));
   document.getElementById('btn-spin-again').addEventListener('click',    spinAgain);
-  document.getElementById('btn-back-colls').addEventListener('click',    () => showScreen('screen-main'));
+  document.getElementById('btn-back-colls').addEventListener('click', () => {
+    if (currentPlatform === 'all') switchPlatform('steam');
+    else                           showScreen('screen-main');
+  });
 
   // Debug modal close/copy/save handlers
   const debugModal = document.getElementById('debug-modal');
@@ -1193,6 +2224,7 @@ async function init() {
   if (api) {
     handleLoadResult(await api.auto_load());
     loadUserInfo();
+    refreshSoundSettings();   // pull persisted sound on/off into module state
     return;
   }
 

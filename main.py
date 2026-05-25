@@ -1,5 +1,5 @@
 """
-Steam Roulette — entry point.
+PC Game Roulette — entry point.
 Launches the pywebview window and wires up the Python js_api.
 """
 
@@ -16,7 +16,7 @@ def main():
     api = SteamRouletteAPI()
 
     window = webview.create_window(
-        title="Steam Roulette",
+        title="PC Game Roulette",
         url=os.path.join(WEB_DIR, "index.html"),
         js_api=api,
         width=1000,

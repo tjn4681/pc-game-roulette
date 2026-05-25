@@ -11,6 +11,9 @@ dist/
 cache/
 config.json
 
+# Claude Code local-only settings (permissions, etc.)
+.claude/
+
 # PyInstaller output
 *.exe
 

@@ -1,5 +1,10 @@
 """
-Steam Roulette backend — Steam detection, collections parsing, name fetching, config.
+PC Game Roulette backend — Steam / GOG / Epic detection, collections parsing,
+name fetching, cross-platform dedup, OAuth, config.
+
+The class kept its historical SteamRouletteAPI name because it's referenced
+by main.py and any future migrations would just churn diffs.
+
 Exposed to the frontend via js_api in main.py.
 """
 
@@ -7,9 +12,16 @@ import base64
 import json
 import os
 import re
+import sqlite3
 import sys
+import time
+import urllib.error
 import urllib.request
 import winreg
+
+import epic_auth
+import epic_api
+import steam_names
 
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -20,6 +32,15 @@ CACHE_DIR       = os.path.join(SCRIPT_DIR, "cache")
 NAMES_CACHE     = os.path.join(CACHE_DIR,  "names.json")
 ART_CACHE_DIR   = os.path.join(CACHE_DIR,  "art")
 HLTB_CACHE      = os.path.join(CACHE_DIR,  "hltb.json")
+EPIC_LIB_CACHE  = os.path.join(CACHE_DIR,  "epic_library.json")
+
+# How long to trust the cached Epic library before re-fetching from the API.
+# Reloading manually from the UI bypasses this cache.
+EPIC_LIB_CACHE_TTL_SECONDS = 60 * 60   # 1 hour
+
+# GOG Galaxy stores its full owned library — across GOG itself and any platform
+# integrations the user has set up (Epic, Steam, Origin, etc.) — in a SQLite DB.
+GOG_GALAXY_DB   = r"C:\ProgramData\GOG.com\Galaxy\storage\galaxy-2.0.db"
 
 os.makedirs(CACHE_DIR, exist_ok=True)
 os.makedirs(ART_CACHE_DIR, exist_ok=True)
@@ -366,6 +387,22 @@ def save_config(cfg):
         json.dump(cfg, f, indent=2)
 
 
+def get_setting(key, default=None):
+    """Read a single key out of config.json, returning default if missing.
+    Use this for any per-user setting that needs to persist across launches."""
+    cfg = load_config()
+    return cfg.get(key, default)
+
+
+def set_setting(key, value):
+    """Persist a single key/value pair to config.json without disturbing other
+    keys.  Safe to call concurrently with other config reads/writes (last
+    writer wins — there's no multi-process contention to worry about)."""
+    cfg = load_config()
+    cfg[key] = value
+    save_config(cfg)
+
+
 # ── Name cache ────────────────────────────────────────────────────────────────
 
 def load_name_cache():
@@ -510,6 +547,416 @@ def _cache_and_return(appid, data):
         pass
     b64 = base64.b64encode(data).decode("ascii")
     return {"status": "ok", "data": f"data:{mime};base64,{b64}"}
+
+
+# ── GOG Galaxy database (full owned library across all integrations) ─────────
+
+def _galaxy_db_open():
+    """Open Galaxy's SQLite DB read-only, or return None if unavailable."""
+    if not os.path.isfile(GOG_GALAXY_DB):
+        return None
+    try:
+        return sqlite3.connect(
+            f"file:{GOG_GALAXY_DB}?mode=ro", uri=True, timeout=2.0,
+        )
+    except sqlite3.Error:
+        return None
+
+
+def query_galaxy_enrichment(release_keys):
+    """For a list of releaseKeys (like ``['gog_1207659146', 'epic_<id>', ...]``)
+    return a dict mapping releaseKey -> enrichment payload:
+
+        {
+          'playtime_minutes': int,
+          'tags':             [str, ...],
+          'image_background': str (url, may be empty),
+          'image_vertical':   str (url),
+          'image_icon':       str (url),
+        }
+
+    Missing rows simply yield empty fields — callers can blindly look up any
+    releaseKey and get a usable dict back.  Single connection, three small
+    queries, batched with SQL ``IN`` so it scales to thousands of games."""
+    if not release_keys:
+        return {}
+
+    conn = _galaxy_db_open()
+    if conn is None:
+        return {}
+
+    # Build a default-filled dict for every requested key — callers don't
+    # need to .get() defensively on each field.
+    result = {}
+    for k in release_keys:
+        result[k] = {
+            "playtime_minutes": 0,
+            "tags":             [],
+            "image_background": "",
+            "image_vertical":   "",
+            "image_icon":       "",
+        }
+
+    # SQLite has a 999-parameter limit per statement by default.  Chunk safely.
+    chunk_size = 800
+    keys = list(release_keys)
+
+    try:
+        cur = conn.cursor()
+
+        # GamePieceType id for originalImages — looked up once, reused.
+        cur.execute(
+            "SELECT id FROM GamePieceTypes WHERE type = 'originalImages' LIMIT 1"
+        )
+        row = cur.fetchone()
+        images_type_id = row[0] if row else None
+
+        for i in range(0, len(keys), chunk_size):
+            chunk = keys[i:i + chunk_size]
+            placeholders = ",".join("?" * len(chunk))
+
+            # Playtime
+            cur.execute(
+                f"SELECT releaseKey, minutesInGame FROM GameTimes "
+                f"WHERE releaseKey IN ({placeholders})",
+                chunk,
+            )
+            for rk, minutes in cur.fetchall():
+                if rk in result and isinstance(minutes, int) and minutes > 0:
+                    result[rk]["playtime_minutes"] = minutes
+
+            # Tags (a game can have multiple tag rows)
+            cur.execute(
+                f"SELECT releaseKey, tag FROM UserReleaseTags "
+                f"WHERE releaseKey IN ({placeholders}) AND tag IS NOT NULL",
+                chunk,
+            )
+            for rk, tag in cur.fetchall():
+                if rk in result and tag:
+                    tag = tag.strip()
+                    if tag and tag not in result[rk]["tags"]:
+                        result[rk]["tags"].append(tag)
+
+            # Image URLs from originalImages piece
+            if images_type_id is not None:
+                cur.execute(
+                    f"SELECT releaseKey, value FROM GamePieces "
+                    f"WHERE gamePieceTypeId = ? AND releaseKey IN ({placeholders})",
+                    [images_type_id] + list(chunk),
+                )
+                for rk, value in cur.fetchall():
+                    if rk not in result or not value:
+                        continue
+                    try:
+                        parsed = json.loads(value)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                    if not isinstance(parsed, dict):
+                        continue
+                    result[rk]["image_background"] = parsed.get("background", "") or ""
+                    result[rk]["image_vertical"]   = parsed.get("verticalCover", "") or ""
+                    result[rk]["image_icon"]       = parsed.get("squareIcon", "") or ""
+
+        # Sort tags alphabetically for stable ordering
+        for rk in result:
+            result[rk]["tags"].sort(key=str.lower)
+    except sqlite3.Error:
+        # Partial result is still useful — return what we managed to gather
+        pass
+    finally:
+        conn.close()
+
+    return result
+
+
+def _galaxy_lookup_key(game, platform):
+    """Pick the releaseKey Galaxy uses for this game.
+
+    For Epic specifically, Galaxy keys on AppName (e.g. 'epic_Cowbird'), NOT
+    the catalogItemId Epic's OAuth API returns.  So when we have both (OAuth
+    library populates 'app_name'), prefer that — it's the only way to bridge
+    OAuth-sourced games to Galaxy-sourced enrichment.
+
+    For GOG, the raw_id (gameID) IS the suffix Galaxy uses.
+    For Steam, the appid IS the suffix.
+    """
+    if platform == "epic" and game.get("app_name"):
+        return f"epic_{game['app_name']}"
+    gid = game.get("id") or ""
+    if "_" in gid:
+        return gid
+    if platform and game.get("raw_id"):
+        return f"{platform}_{game['raw_id']}"
+    return None
+
+
+# ── Cross-platform duplicate detection ───────────────────────────────────────
+#
+# Goal: identify when "Batman: Arkham City" on Steam is the same product as
+# "Batman Arkham City Game of the Year Edition" on Epic — different IDs,
+# different exact strings, same game.  The trick is normalizing titles
+# aggressively before comparing.
+
+# Edition / variant suffixes that should be stripped before comparison.
+# Order matters: LONGER phrases are listed first so that e.g.
+# "pixel remaster" is matched before the bare word "remaster".
+_EDITION_PHRASES = [
+    # Multi-word, edition-class suffixes
+    "game of the year edition", "goty edition", "definitive edition",
+    "enhanced edition", "deluxe edition", "ultimate edition",
+    "complete edition", "collector's edition", "collectors edition",
+    "anniversary edition", "director's cut", "directors cut",
+    "special edition", "premium edition", "gold edition",
+    "remastered edition", "standard edition", "platinum edition",
+    "legendary edition", "pixel remaster", "game of the year",
+    # Single-word suffixes
+    "definitive", "remastered", "remaster", "redux", "hd", "goty",
+    "anniversary", "enhanced", "legendary", "ultimate", "complete",
+    "deluxe", "premium", "gold", "edition",
+    # Markers that explicitly identify a "base/original" variant.  Stripping
+    # these makes "Final Fantasy VI (Classic)" bucket with "Final Fantasy VI
+    # Pixel Remaster" so the edition-preference filter can choose between them.
+    "classic", "original",
+]
+
+# Used by edition-preference detection to classify each game as
+# "enhanced"/remastered or base/original.  Matches the word anywhere in the
+# title, not just as a suffix (e.g. "Pixel Remaster" can appear mid-string).
+_ENHANCED_MARKER_RE = re.compile(
+    r"\b(remastered?|remaster|definitive|complete|goty|game\s+of\s+the\s+year|"
+    r"enhanced|legendary|ultimate|anniversary|director'?s\s+cut|redux|"
+    r"pixel\s+remaster|hd)\b",
+    re.IGNORECASE,
+)
+
+def is_enhanced_edition(title):
+    """Heuristic: does this title look like an enhanced/remastered/GOTY edition?
+    Used to choose between same-game variants on the same platform."""
+    return bool(_ENHANCED_MARKER_RE.search(title or ""))
+_TRADEMARK_CHARS = re.compile(r"[™®©℠]")  # ™ ® © ℠
+_PUNCT = re.compile(r"[^a-z0-9\s]+")
+_WS = re.compile(r"\s+")
+
+
+def normalize_title(title):
+    """Reduce a game title to a fuzzy-comparable canonical form.
+
+    Examples:
+      "Batman: Arkham City"                          -> "batman arkham city"
+      "Batman Arkham City Game of the Year Edition" -> "batman arkham city"
+      "DOOM (1993)"                                   -> "doom 1993"
+      "The Witcher 3: Wild Hunt - Complete Edition"  -> "witcher 3 wild hunt"
+    """
+    if not title:
+        return ""
+    s = title.lower()
+    s = _TRADEMARK_CHARS.sub("", s)
+    s = s.replace("&", "and")
+    s = _PUNCT.sub(" ", s)
+    s = _WS.sub(" ", s).strip()
+
+    # Strip edition phrases — must be done after punctuation normalization
+    # so "Game-of-the-Year" matches.  Repeat until stable to handle stacked
+    # suffixes like "Definitive Edition - GOTY".
+    changed = True
+    while changed:
+        changed = False
+        for phrase in _EDITION_PHRASES:
+            if s.endswith(" " + phrase):
+                s = s[: -(len(phrase) + 1)].strip()
+                changed = True
+            elif s == phrase:
+                s = ""
+                changed = True
+
+    # Strip leading article
+    if s.startswith("the "):
+        s = s[4:]
+    return s
+
+
+def find_cross_platform_duplicates(games_by_platform, priority):
+    """For a mapping of platform -> [game dicts], return a dict mapping each
+    platform to a set of game IDs that should be hidden because the same game
+    exists on a higher-priority platform.
+
+    `priority` is an ordered list like ['steam', 'gog', 'epic'] — earlier =
+    more preferred.
+
+    Algorithm:
+      1. Bucket every game by its normalized title.
+      2. For each bucket containing games from 2+ platforms, find the highest-
+         priority platform present in the bucket.
+      3. Mark every game in the bucket that's on a DIFFERENT platform as
+         excluded.  (Games within the same platform but with matching titles —
+         e.g. two different DOOMs on Steam — are left alone.)
+    """
+    excludes = {p: set() for p in games_by_platform}
+    buckets = {}   # normalized title -> [(platform, game), ...]
+
+    for platform, games in games_by_platform.items():
+        for g in games:
+            norm = normalize_title(g.get("name", ""))
+            if not norm:
+                continue
+            buckets.setdefault(norm, []).append((platform, g))
+
+    # Build a fast lookup of platform priority
+    rank = {p: i for i, p in enumerate(priority)}
+
+    for norm, entries in buckets.items():
+        platforms_in_bucket = {p for p, _ in entries}
+        if len(platforms_in_bucket) < 2:
+            continue   # not a cross-platform duplicate
+        # Pick the winning platform: lowest rank index among those present
+        winner = min(platforms_in_bucket,
+                     key=lambda p: rank.get(p, 99))
+        for platform, game in entries:
+            if platform == winner:
+                continue
+            gid = game.get("id")
+            if gid:
+                excludes[platform].add(gid)
+
+    return {p: list(v) for p, v in excludes.items()}
+
+
+def find_same_platform_edition_dupes(games, preference):
+    """For a list of games (all on the same platform), return a set of game IDs
+    that should be hidden because a same-game-different-edition variant exists
+    and the user has expressed a preference.
+
+    preference: 'enhanced' (hide originals) | 'original' (hide enhanced) | 'both' (hide nothing)
+
+    Algorithm:
+      1. Bucket games by normalized title.  Editions like "Mass Effect" and
+         "Mass Effect Legendary Edition" land in the same bucket because
+         normalize_title() strips the suffix.
+      2. For each bucket with 2+ entries, classify each game as enhanced or
+         original using is_enhanced_edition().
+      3. Hide whichever side the preference says to hide — but only when BOTH
+         sides exist in the bucket (otherwise there's no choice to make).
+    """
+    if preference not in ("enhanced", "original") or not games:
+        return set()
+
+    buckets = {}
+    for g in games:
+        norm = normalize_title(g.get("name", ""))
+        if not norm:
+            continue
+        buckets.setdefault(norm, []).append(g)
+
+    hidden = set()
+    for norm, entries in buckets.items():
+        if len(entries) < 2:
+            continue
+        enhanced = [g for g in entries if is_enhanced_edition(g.get("name", ""))]
+        original = [g for g in entries if not is_enhanced_edition(g.get("name", ""))]
+        if not enhanced or not original:
+            continue   # only one side present — nothing to choose between
+        losers = original if preference == "enhanced" else enhanced
+        for g in losers:
+            gid = g.get("id")
+            if gid:
+                hidden.add(gid)
+    return hidden
+
+
+def apply_galaxy_enrichment(games, platform=None):
+    """Mutate `games` in place, decorating each entry with Galaxy-sourced
+    playtime / image / tag data.  Safe to call regardless of whether Galaxy
+    is installed — if it isn't, every game just gets the default-empty values.
+
+    Bridges the OAuth/Galaxy ID mismatch for Epic via the game's app_name."""
+    if not games:
+        return games
+
+    # Build a parallel list of lookup keys (one per game) so we can map back
+    keys = []
+    for g in games:
+        keys.append(_galaxy_lookup_key(g, platform))
+
+    # Dedupe before querying
+    unique_keys = list({k for k in keys if k})
+    enrichment = query_galaxy_enrichment(unique_keys)
+
+    for g, key in zip(games, keys):
+        if not key:
+            continue
+        data = enrichment.get(key)
+        if not data:
+            continue
+        # Only fill in fields the game doesn't already define — avoids
+        # clobbering richer per-source data (e.g. OAuth catalog metadata)
+        g.setdefault("playtime_minutes", data["playtime_minutes"])
+        g.setdefault("image_background", data["image_background"])
+        g.setdefault("image_vertical",   data["image_vertical"])
+        g.setdefault("image_icon",       data["image_icon"])
+        g.setdefault("tags",             data["tags"])
+    return games
+
+
+def query_galaxy_db_for_platform(platform_prefix):
+    """Return a sorted list of {id, raw_id, name, platform, source} dicts for
+    every owned game whose releaseKey starts with ``<platform_prefix>_`` in
+    GOG Galaxy's local SQLite database.  Works for GOG itself and for any
+    platform the user has integrated with Galaxy (Epic, Steam, etc.).
+
+    Returns ``[]`` if the DB file is missing, locked, or has an unexpected
+    schema — the caller should fall back to its registry/manifest method."""
+    if not os.path.isfile(GOG_GALAXY_DB):
+        return []
+
+    games = {}   # release_key -> game dict; second pass prefers 'title' rows
+    try:
+        # Read-only URI so we don't fight Galaxy for the write lock.
+        conn = sqlite3.connect(
+            f"file:{GOG_GALAXY_DB}?mode=ro", uri=True, timeout=2.0,
+        )
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT lr.releaseKey, gp.value, gpt.type
+              FROM LibraryReleases lr
+              LEFT JOIN GamePieces      gp  ON gp.releaseKey      = lr.releaseKey
+              LEFT JOIN GamePieceTypes  gpt ON gpt.id             = gp.gamePieceTypeId
+             WHERE lr.releaseKey LIKE ?
+               AND gpt.type IN ('title', 'originalTitle')
+            """,
+            (f"{platform_prefix}_%",),
+        )
+        rows = cur.fetchall()
+        conn.close()
+    except sqlite3.Error:
+        return []
+
+    for release_key, value, type_name in rows:
+        if not value:
+            continue
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        name = parsed.get("title") if isinstance(parsed, dict) else None
+        if not name:
+            continue
+
+        # Prefer 'title' over 'originalTitle' when both exist for the same key
+        existing = games.get(release_key)
+        if existing is not None and type_name != "title":
+            continue
+
+        raw_id = release_key.split("_", 1)[1] if "_" in release_key else release_key
+        games[release_key] = {
+            "id":       release_key,
+            "raw_id":   raw_id,
+            "name":     name,
+            "platform": platform_prefix,
+            "source":   "galaxy",
+        }
+
+    return sorted(games.values(), key=lambda g: g["name"].lower())
 
 
 # ── js_api class ──────────────────────────────────────────────────────────────
@@ -857,7 +1304,7 @@ class SteamRouletteAPI:
             return {"status": "error", "message": "Window not ready."}
         result = self._window.create_file_dialog(
             dialog_type=30,  # SAVE_DIALOG
-            save_filename="steam-roulette-debug.txt",
+            save_filename="pc-game-roulette-debug.txt",
             file_types=("Text files (*.txt)", "All files (*.*)"),
         )
         if not result:
@@ -941,23 +1388,38 @@ class SteamRouletteAPI:
 
     # ── HowLongToBeat completion times ───────────────────────────────────
 
+    # Symbols Steam appends that confuse HLTB's similarity scorer
+    _TRADEMARK_RE = re.compile(r'[™®©℠]')
+    # Common subtitle separators — everything after these is stripped for the
+    # fallback search term (e.g. "Game Name: Subtitle" → "Game Name")
+    _SUBTITLE_RE  = re.compile(r'\s+[-–—:]\s+|\s+\(')
+
     def get_hltb_data(self, appid_str, game_name):
         """
         Fetch HowLongToBeat completion times for a game.
         Requires: pip install howlongtobeatpy
         Returns main_story, main_extra, completionist hours (floats).
-        Results are cached to cache/hltb.json.
+        Successful results are cached to cache/hltb.json.
+        Failures are NOT cached so that transient errors (network, stale API
+        key, name mismatch) are automatically retried next spin.
         """
-        try:
-            appid = int(appid_str)
-        except (ValueError, TypeError):
-            return {"status": "error", "message": "Invalid appid"}
+        # Accept any non-empty string as the cache key — works for both Steam
+        # appids (plain numeric strings) and GOG / Epic ids like "gog_1207659146"
+        # or "epic_Hades" so that all three platforms share the same cache file.
+        key = str(appid_str).strip()
+        if not key:
+            return {"status": "error", "message": "Invalid id"}
 
         game_name = (game_name or "").strip()
         if not game_name or game_name.startswith("App "):
             return {"status": "not_found"}
 
-        # Load cache
+        # Strip ™ ® © etc. that trip up HLTB's string similarity
+        clean_name = self._TRADEMARK_RE.sub('', game_name)
+        clean_name = ' '.join(clean_name.split())   # normalise whitespace
+
+        # Load cache — only positive (dict) hits are stored; None entries are
+        # legacy stale failures that should be retried, so we ignore them.
         cache = {}
         try:
             if os.path.isfile(HLTB_CACHE):
@@ -966,42 +1428,53 @@ class SteamRouletteAPI:
         except Exception:
             pass
 
-        key = str(appid)
-        if key in cache:
-            hit = cache[key]
-            return {"status": "ok", **hit} if hit else {"status": "not_found"}
+        hit = cache.get(key)
+        if isinstance(hit, dict):           # valid cached result
+            return {"status": "ok", **hit}
+        # (None / missing → fall through and search)
 
-        # Search HLTB
+        # Build search terms: full clean name first, then bare title as fallback
+        search_terms = [clean_name]
+        short = self._SUBTITLE_RE.split(clean_name)[0].strip()
+        if short and short != clean_name:
+            search_terms.append(short)
+
         try:
             from howlongtobeatpy import HowLongToBeat
-            results = HowLongToBeat().search(game_name)
+            hltb = HowLongToBeat()
         except ImportError:
             return {"status": "unavailable"}
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
 
-        if not results:
-            cache[key] = None
-            self._write_hltb_cache(cache)
-            return {"status": "not_found"}
+        def _best_result(term, threshold):
+            try:
+                results = hltb.search(term)
+            except Exception:
+                return None
+            if not results:
+                return None
+            candidate = max(results, key=lambda r: r.similarity)
+            return candidate if candidate.similarity >= threshold else None
 
-        best = max(results, key=lambda r: r.similarity)
-        if best.similarity < 0.55:
-            cache[key] = None
-            self._write_hltb_cache(cache)
-            return {"status": "not_found"}
+        # Try full name at 0.55, then shorter title at 0.50
+        best = _best_result(search_terms[0], 0.55)
+        if best is None and len(search_terms) > 1:
+            best = _best_result(search_terms[1], 0.50)
 
-        def clean(v):
+        if best is None:
+            return {"status": "not_found"}   # not cached — will retry next time
+
+        def safe_hours(v):
             if v is None or (isinstance(v, (int, float)) and v <= 0):
                 return None
             return float(v)
 
         data = {
             "matched_name": best.game_name,
-            "main_story":    clean(best.main_story),
-            "main_extra":    clean(best.main_extra),
-            "completionist": clean(best.completionist),
+            "main_story":    safe_hours(best.main_story),
+            "main_extra":    safe_hours(best.main_extra),
+            "completionist": safe_hours(best.completionist),
         }
+        # Only cache successes — failures stay uncached for automatic retry
         cache[key] = data
         self._write_hltb_cache(cache)
         return {"status": "ok", **data}
@@ -1012,6 +1485,581 @@ class SteamRouletteAPI:
                 json.dump(cache, f, indent=2)
         except Exception:
             pass
+
+    # ── GOG and Epic library ──────────────────────────────────────────────
+
+    def get_gog_games(self):
+        """Return owned GOG games.  Prefers the GOG Galaxy SQLite database,
+        which has the FULL owned library; falls back to the Windows registry
+        (installed games only) if Galaxy isn't present or its DB isn't readable."""
+        # Primary: Galaxy DB — full owned library
+        galaxy = query_galaxy_db_for_platform("gog")
+        if galaxy:
+            apply_galaxy_enrichment(galaxy, platform="gog")
+            galaxy = self._filter_platform_excluded(galaxy)
+            return {"status": "ok", "games": galaxy, "source": "galaxy"}
+
+        # Fallback: registry-based detection (installed only)
+        games = []
+        reg_paths = [
+            r"SOFTWARE\WOW6432Node\GOG.com\Games",
+            r"SOFTWARE\GOG.com\Games",
+        ]
+        for reg_path in reg_paths:
+            try:
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, reg_path) as base:
+                    i = 0
+                    while True:
+                        try:
+                            subkey_name = winreg.EnumKey(base, i)
+                            with winreg.OpenKey(base, subkey_name) as gk:
+                                try:
+                                    name    = winreg.QueryValueEx(gk, "gameName")[0]
+                                    game_id = winreg.QueryValueEx(gk, "gameID")[0]
+                                    if name and game_id:
+                                        games.append({
+                                            "id":       f"gog_{game_id}",
+                                            "raw_id":   str(game_id),
+                                            "name":     name,
+                                            "platform": "gog",
+                                            "source":   "registry",
+                                        })
+                                except OSError:
+                                    pass
+                            i += 1
+                        except OSError:
+                            break   # no more subkeys
+            except OSError:
+                continue            # try the other reg path
+            if games:
+                break               # found games in the first working path
+
+        seen, unique = set(), []
+        for g in games:
+            if g["id"] not in seen:
+                seen.add(g["id"])
+                unique.append(g)
+        filtered = self._filter_platform_excluded(
+            sorted(unique, key=lambda g: g["name"].lower())
+        )
+        return {
+            "status": "ok",
+            "games": filtered,
+            "source": "registry",
+        }
+
+    def _filter_platform_excluded(self, games):
+        """Strip games the user has manually excluded (per-platform exclusion
+        list keyed by full game id)."""
+        if not games:
+            return games
+        cfg = load_config()
+        excluded = set((cfg.get("excluded_platform_games") or {}).keys())
+        if not excluded:
+            return games
+        return [g for g in games if g.get("id") not in excluded]
+
+    # ── Epic dispatch ─────────────────────────────────────────────────────
+
+    def get_epic_games(self, force_refresh=False):
+        """Return owned Epic games.  Routes to one of three sources based on
+        the `epic_source` setting:
+
+            'oauth'  — direct from Epic's API (requires OAuth connection)
+            'galaxy' — GOG Galaxy SQLite DB (Epic integration plugin)
+            (auto-fallback to local manifests if both above yield nothing)
+
+        force_refresh=True bypasses the on-disk OAuth library cache.
+        """
+        source = get_setting("epic_source", "galaxy")
+
+        if source == "oauth":
+            result = self._get_epic_games_oauth(force_refresh=force_refresh)
+            if result["status"] == "ok" and result["games"]:
+                result["games"] = self._filter_platform_excluded(result["games"])
+                return result
+            # If OAuth failed (e.g. refresh expired), bubble the auth status up
+            # so the frontend can prompt the user to reconnect — don't silently
+            # fall through to a different source.
+            if result["status"] == "auth_required":
+                return result
+            # Empty result but no auth error: fall through to alternatives
+
+        # 'galaxy' source, OR fallback when OAuth returned empty
+        galaxy = query_galaxy_db_for_platform("epic")
+        if galaxy:
+            apply_galaxy_enrichment(galaxy, platform="epic")
+            galaxy = self._filter_platform_excluded(galaxy)
+            return {"status": "ok", "games": galaxy, "source": "galaxy"}
+
+        # Final fallback: locally installed games via manifest folder
+        result = self._get_epic_games_manifests()
+        apply_galaxy_enrichment(result.get("games", []), platform="epic")
+        result["games"] = self._filter_platform_excluded(result.get("games", []))
+        return result
+
+    # ── Epic sources ──────────────────────────────────────────────────────
+
+    def _get_epic_games_oauth(self, force_refresh=False):
+        """Fetch the user's full owned Epic library via Epic's REST API.
+        Uses a 1-hour on-disk cache so reloading is instant; force_refresh
+        bypasses the cache for the manual Reload button."""
+        # Cache hit? (positive results only — failures shouldn't be cached)
+        if not force_refresh and os.path.isfile(EPIC_LIB_CACHE):
+            try:
+                with open(EPIC_LIB_CACHE, "r", encoding="utf-8") as f:
+                    cached = json.load(f)
+                age = time.time() - cached.get("fetched_at", 0)
+                if age < EPIC_LIB_CACHE_TTL_SECONDS and cached.get("games"):
+                    # Re-enrich on every cache hit so playtime / tags stay fresh
+                    # (Galaxy data can change between OAuth library refreshes)
+                    games = cached["games"]
+                    apply_galaxy_enrichment(games, platform="epic")
+                    return {"status": "ok", "games": games,
+                            "source": "oauth", "cached": True}
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        # Get a valid access token (refreshing silently if needed)
+        tokens, status = epic_auth.get_valid_token(CACHE_DIR)
+        if status != "ok" or not tokens:
+            return {"status": "auth_required", "games": [], "source": "oauth",
+                    "auth_status": status}
+
+        try:
+            games = epic_api.get_owned_games_with_titles(tokens["access_token"])
+            # Hybrid: enrich OAuth library with Galaxy playtime/images/tags when
+            # the user also has Galaxy installed.  This is the "best of both"
+            # mode — full owned library from Epic, rich metadata from Galaxy.
+            apply_galaxy_enrichment(games, platform="epic")
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):
+                # Token rejected — wipe and ask user to reconnect
+                epic_auth.clear_tokens(CACHE_DIR)
+                return {"status": "auth_required", "games": [], "source": "oauth",
+                        "auth_status": "token_rejected"}
+            return {"status": "error", "games": [], "source": "oauth",
+                    "message": f"Epic API HTTP {e.code}"}
+        except Exception as e:
+            return {"status": "error", "games": [], "source": "oauth",
+                    "message": str(e)}
+
+        # Write through to cache
+        try:
+            with open(EPIC_LIB_CACHE, "w", encoding="utf-8") as f:
+                json.dump({"fetched_at": time.time(), "games": games}, f, indent=2)
+        except OSError:
+            pass
+
+        return {"status": "ok", "games": games, "source": "oauth"}
+
+    def _get_epic_games_manifests(self):
+        """Read the launcher's per-game manifest folder for installed Epic games."""
+        manifests_path = r"C:\ProgramData\Epic\EpicGamesLauncher\Data\Manifests"
+        if not os.path.isdir(manifests_path):
+            return {"status": "ok", "games": [], "source": "none"}
+
+        skip_kw = {
+            "epic games launcher", "directx", "vcredist", "redistrib",
+            "prerequisites", "unreal engine",
+        }
+        games = []
+        try:
+            for filename in os.listdir(manifests_path):
+                if not filename.endswith(".item"):
+                    continue
+                try:
+                    with open(os.path.join(manifests_path, filename),
+                              "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    display_name = (data.get("DisplayName") or "").strip()
+                    app_name     = (data.get("AppName")     or "").strip()
+                    if not display_name or not app_name:
+                        continue
+                    if any(kw in display_name.lower() for kw in skip_kw):
+                        continue
+                    if not data.get("CatalogNamespace"):
+                        continue
+                    games.append({
+                        "id":       f"epic_{app_name}",
+                        "raw_id":   app_name,
+                        "name":     display_name,
+                        "platform": "epic",
+                        "source":   "manifests",
+                    })
+                except Exception:
+                    pass
+        except OSError:
+            pass
+
+        seen, unique = set(), []
+        for g in games:
+            if g["id"] not in seen:
+                seen.add(g["id"])
+                unique.append(g)
+        return {
+            "status": "ok",
+            "games": sorted(unique, key=lambda g: g["name"].lower()),
+            "source": "manifests",
+        }
+
+    # ── Epic OAuth API (called from the Settings UI) ──────────────────────
+
+    def get_epic_source(self):
+        """Return the user's currently-selected Epic library source."""
+        return {"status": "ok", "source": get_setting("epic_source", "galaxy")}
+
+    def set_epic_source(self, source):
+        """Persist the user's Epic library source choice."""
+        if source not in ("galaxy", "oauth"):
+            return {"status": "error", "message": f"Invalid source: {source}"}
+        set_setting("epic_source", source)
+        return {"status": "ok", "source": source}
+
+    def epic_oauth_url(self):
+        """Return the Epic login URL the user opens in their browser."""
+        return {"status": "ok", "url": epic_auth.get_login_url()}
+
+    def epic_oauth_complete(self, code):
+        """Exchange the pasted authorization code for tokens (one-time)."""
+        if not code or not str(code).strip():
+            return {"status": "error", "message": "No code provided"}
+        try:
+            info = epic_auth.complete_auth(CACHE_DIR, code)
+            return {"status": "ok", **info}
+        except urllib.error.HTTPError as e:
+            try:
+                body = e.read().decode("utf-8")
+            except Exception:
+                body = ""
+            return {"status": "error",
+                    "message": f"HTTP {e.code}: {body[:300] or e.reason}"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    def epic_oauth_status(self):
+        """Return current connection status for the Settings UI."""
+        return {"status": "ok", **epic_auth.get_status(CACHE_DIR)}
+
+    def epic_oauth_disconnect(self):
+        """Wipe stored Epic tokens and clear the cached library."""
+        epic_auth.clear_tokens(CACHE_DIR)
+        try:
+            if os.path.isfile(EPIC_LIB_CACHE):
+                os.remove(EPIC_LIB_CACHE)
+        except OSError:
+            pass
+        return {"status": "ok"}
+
+    def get_galaxy_collections(self, platform):
+        """Group the user's Galaxy tags into pseudo-collections for the given
+        platform ('gog' or 'epic').  Returns the same structure as Steam
+        collections so the existing collection-card grid renders them natively:
+
+            [{ name: 'JRPG', count: 12, appids: ['epic_<id>', ...] }, ...]
+
+        Empty list if Galaxy isn't installed or the user has no tags yet.
+        Caller is expected to render these alongside (or instead of) the
+        platform's "Full Library" card.
+        """
+        if platform not in ("gog", "epic"):
+            return {"status": "error", "message": "Invalid platform"}
+
+        conn = _galaxy_db_open()
+        if conn is None:
+            return {"status": "ok", "collections": []}
+
+        tag_to_keys = {}
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT releaseKey, tag FROM UserReleaseTags "
+                "WHERE releaseKey LIKE ? AND tag IS NOT NULL",
+                (f"{platform}_%",),
+            )
+            for release_key, tag in cur.fetchall():
+                if not tag:
+                    continue
+                tag = tag.strip()
+                if not tag:
+                    continue
+                tag_to_keys.setdefault(tag, []).append(release_key)
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
+
+        collections = [
+            {
+                "name":   tag,
+                "count":  len(keys),
+                "appids": sorted(set(keys)),
+            }
+            for tag, keys in sorted(tag_to_keys.items(), key=lambda kv: kv[0].lower())
+        ]
+        return {"status": "ok", "collections": collections}
+
+    # ── Cross-platform duplicate filtering ────────────────────────────────
+
+    def get_dedup_settings(self):
+        """Return the user's cross-platform duplicate hide settings."""
+        return {
+            "status":   "ok",
+            "enabled":  bool(get_setting("hide_duplicates", False)),
+            "priority": get_setting("platform_priority",
+                                    ["steam", "gog", "epic"]),
+        }
+
+    def set_dedup_settings(self, enabled, priority):
+        """Persist the dedup toggle and priority order."""
+        if not isinstance(priority, list):
+            return {"status": "error", "message": "priority must be a list"}
+        # Sanitise: keep only known platforms, dedupe, ensure all three present
+        seen = []
+        for p in priority:
+            if p in ("steam", "gog", "epic") and p not in seen:
+                seen.append(p)
+        for p in ("steam", "gog", "epic"):
+            if p not in seen:
+                seen.append(p)
+        set_setting("hide_duplicates", bool(enabled))
+        set_setting("platform_priority", seen)
+        return self.get_dedup_settings()
+
+    # ── Edition preference (newer/enhanced vs original) ──────────────────
+
+    def get_edition_preference(self):
+        """Return the user's preference for same-game edition variants:
+            'both'     — show everything (default)
+            'enhanced' — hide originals when an enhanced edition exists
+            'original' — hide enhanced editions when an original exists
+        """
+        pref = get_setting("edition_preference", "both")
+        if pref not in ("both", "enhanced", "original"):
+            pref = "both"
+        return {"status": "ok", "preference": pref}
+
+    def set_edition_preference(self, preference):
+        if preference not in ("both", "enhanced", "original"):
+            return {"status": "error",
+                    "message": "preference must be 'both', 'enhanced', or 'original'"}
+        set_setting("edition_preference", preference)
+        return {"status": "ok", "preference": preference}
+
+    def _apply_edition_preference(self, games):
+        """Strip same-game duplicates within the given list per the user's
+        edition_preference setting.  Safe to call on any platform's games."""
+        pref = get_setting("edition_preference", "both")
+        if pref not in ("enhanced", "original") or not games:
+            return games
+        hidden = find_same_platform_edition_dupes(games, pref)
+        if not hidden:
+            return games
+        return [g for g in games if g.get("id") not in hidden]
+
+    def get_edition_filter(self):
+        """Same shape as get_duplicate_filter but for same-platform edition
+        variants (e.g. Mass Effect vs Mass Effect Legendary Edition).  Returns
+        per-platform game IDs to hide based on the edition_preference setting.
+
+        Disabled (preference='both') returns all empty lists."""
+        pref = get_setting("edition_preference", "both")
+        empty = {"status": "ok", "steam": [], "gog": [], "epic": [],
+                 "preference": pref,
+                 "counts": {"steam_hidden": 0, "gog_hidden": 0, "epic_hidden": 0}}
+        if pref not in ("enhanced", "original"):
+            return empty
+
+        # Steam — synthesise game dicts using cached names (lazy + bulk)
+        steam_appids = set()
+        for ids in (self._collections or {}).values():
+            steam_appids.update(ids)
+        name_cache = load_name_cache()
+        bulk_names = steam_names.get_steam_app_names(CACHE_DIR)
+        def _name_for(a):
+            return name_cache.get(str(a)) or bulk_names.get(str(a)) or ""
+        steam_games = [
+            {"id": f"steam_{a}", "raw_id": a, "platform": "steam",
+             "name": _name_for(a)}
+            for a in steam_appids
+            if _name_for(a)
+        ]
+
+        gog_games  = self.get_gog_games().get("games", [])
+        epic_games = self.get_epic_games().get("games", [])
+
+        steam_hidden = find_same_platform_edition_dupes(steam_games, pref)
+        gog_hidden   = find_same_platform_edition_dupes(gog_games,   pref)
+        epic_hidden  = find_same_platform_edition_dupes(epic_games,  pref)
+
+        return {
+            "status": "ok",
+            "preference": pref,
+            "steam": list(steam_hidden),
+            "gog":   list(gog_hidden),
+            "epic":  list(epic_hidden),
+            "counts": {
+                "steam_hidden": len(steam_hidden),
+                "gog_hidden":   len(gog_hidden),
+                "epic_hidden":  len(epic_hidden),
+            },
+        }
+
+    def get_sound_enabled(self):
+        """Whether reel tick / landing sounds are enabled."""
+        return {"status": "ok", "enabled": bool(get_setting("sound_enabled", True))}
+
+    def set_sound_enabled(self, enabled):
+        """Toggle reel tick / landing sounds."""
+        set_setting("sound_enabled", bool(enabled))
+        return {"status": "ok", "enabled": bool(enabled)}
+
+    def get_steam_names_status(self):
+        """Return whether the bulk SteamSpy name cache exists and how big it is.
+        The frontend uses this to warn users that the first dedup computation
+        will take ~30 seconds (the SteamSpy pages fetch sequentially)."""
+        age = steam_names.cache_age_seconds(CACHE_DIR)
+        bulk = steam_names.load_cache(CACHE_DIR)
+        return {
+            "status": "ok",
+            "cached": len(bulk) > 0,
+            "count":  len(bulk),
+            "age_seconds": age,
+            "ttl_seconds": steam_names.CACHE_TTL_SEC,
+        }
+
+    def refresh_steam_names(self):
+        """Force-refresh the bulk Steam name cache (blocking, ~30 sec)."""
+        names = steam_names.get_steam_app_names(CACHE_DIR, force_refresh=True)
+        return {"status": "ok", "count": len(names)}
+
+    def get_duplicate_filter(self):
+        """Load every owned game across Steam / GOG / Epic, compute which IDs
+        should be hidden based on the priority order, and return:
+
+            { steam: [excluded_ids], gog: [excluded_ids], epic: [excluded_ids],
+              counts: { steam_hidden: N, gog_hidden: N, epic_hidden: N } }
+
+        Frontend caches this and applies the exclude-lists locally to its game
+        lists.  Returns empty lists if dedup is disabled."""
+        settings = self.get_dedup_settings()
+        if not settings["enabled"]:
+            return {"status": "ok",
+                    "steam": [], "gog": [], "epic": [],
+                    "counts": {"steam_hidden": 0, "gog_hidden": 0, "epic_hidden": 0}}
+
+        priority = settings["priority"]
+
+        # Build the cross-platform pool — names per game id.
+        # Steam: union of every appid across collections + shortcuts.
+        steam_appids = set()
+        for ids in (self._collections or {}).values():
+            steam_appids.update(ids)
+        # Non-Steam shortcuts (the _shortcuts dict is {appid: {...}}); ignore
+        # them for dedup — synthetic IDs and they don't cross platforms
+        # in any meaningful way.
+
+        # Name resolution: merge the lazy per-spin cache (authoritative when
+        # present) with the bulk SteamSpy cache (covers ~30k popular games).
+        # The bulk cache is fetched lazily on first use of dedup and refreshed
+        # weekly — see steam_names.get_steam_app_names().
+        name_cache = load_name_cache()
+        bulk_names = steam_names.get_steam_app_names(CACHE_DIR)
+
+        def _name_for(appid):
+            return (name_cache.get(str(appid))
+                    or bulk_names.get(str(appid))
+                    or "")
+
+        steam_games = [
+            {"id": f"steam_{a}", "raw_id": a, "platform": "steam",
+             "name": _name_for(a)}
+            for a in steam_appids
+            if _name_for(a)   # skip games whose name we still don't know
+        ]
+
+        gog_games  = self.get_gog_games().get("games", [])
+        epic_games = self.get_epic_games().get("games", [])
+
+        excludes = find_cross_platform_duplicates(
+            {"steam": steam_games, "gog": gog_games, "epic": epic_games},
+            priority,
+        )
+        return {
+            "status": "ok",
+            "steam":  excludes.get("steam", []),
+            "gog":    excludes.get("gog",   []),
+            "epic":   excludes.get("epic",  []),
+            "counts": {
+                "steam_hidden": len(excludes.get("steam", [])),
+                "gog_hidden":   len(excludes.get("gog",   [])),
+                "epic_hidden":  len(excludes.get("epic",  [])),
+            },
+        }
+
+    def open_external_url(self, url):
+        """Open an http/https URL in the user's default browser.  Used by the
+        OAuth modal to fire the Epic login page."""
+        if not isinstance(url, str) or not (url.startswith("http://") or
+                                            url.startswith("https://")):
+            return {"status": "error", "message": "Invalid URL"}
+        try:
+            os.startfile(url)
+            return {"status": "ok"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    # Both Galaxy and Epic register URL Protocol handlers — these resolve via
+    # ShellExecute when launched through the Windows shell.  ``cmd /c start``
+    # is the most reliable cross-context way to fire a URI on Windows; it works
+    # even when the calling process is a non-foreground thread (which is what
+    # pywebview's js_api callbacks are).
+    def _launch_uri(self, uri):
+        """Open a protocol URI through the Windows shell.  Returns the URI in
+        the response so the frontend can surface it in a toast for debugging."""
+        import subprocess
+        try:
+            subprocess.Popen(
+                ["cmd", "/c", "start", "", uri],
+                shell=False,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            return {"status": "ok", "uri": uri}
+        except Exception as e:
+            return {"status": "error", "message": str(e), "uri": uri}
+
+    def launch_gog_game(self, raw_id, source=None):
+        """Launch a GOG game via the GOG Galaxy URI scheme.  Galaxy opens the
+        game page, where the user clicks Play (installed) or Install (not).
+
+        The correct verb is ``openGameView`` (not ``openGame``) — the latter
+        is silently ignored by recent Galaxy versions."""
+        release_key = raw_id if raw_id.startswith("gog_") else f"gog_{raw_id}"
+        return self._launch_uri(f"goggalaxy://openGameView/{release_key}")
+
+    def launch_epic_game(self, raw_id, source=None, app_name=None):
+        """Launch an Epic game.  Picks the best launch method based on what
+        we know about the game:
+
+        * source='manifests' — raw_id IS the launcher AppName, so we can
+          fire the Epic Launcher URI directly.
+        * source='oauth' with app_name — same, AppName came from the catalog
+          API response.
+        * source='galaxy' (or anything else) — fall back to GOG Galaxy URI,
+          which handles both installed and uninstalled games gracefully.
+        """
+        # Direct Epic Launcher launch when we know the AppName
+        if source == "manifests":
+            uri = (f"com.epicgames.launcher://apps/{raw_id}"
+                   "?action=launch&silent=true")
+        elif source == "oauth" and app_name:
+            uri = (f"com.epicgames.launcher://apps/{app_name}"
+                   "?action=launch&silent=true")
+        else:
+            # Galaxy URI — works for both installed and uninstalled games
+            release_key = raw_id if raw_id.startswith("epic_") else f"epic_{raw_id}"
+            uri = f"goggalaxy://openGameView/{release_key}"
+        return self._launch_uri(uri)
 
     # ── Game launch ───────────────────────────────────────────────────────
 
@@ -1253,6 +2301,32 @@ class SteamRouletteAPI:
             "hidden_collections": list(load_config().get("hidden_collections", [])),
         }
 
+    # ── GOG / Epic exclusions ─────────────────────────────────────────────
+    #
+    # Same idea as toggle_exclude (which is Steam-only because it operates on
+    # integer appids) but keyed by the full prefixed game ID ('gog_<id>' or
+    # 'epic_<id>').  Stored as a flat dict {id: name} so we can show the names
+    # in Settings without re-fetching from Galaxy / Epic.
+
+    def toggle_exclude_platform_game(self, game_id, name=None):
+        """Toggle whether a GOG / Epic game is excluded from future spins."""
+        if not isinstance(game_id, str) or not game_id:
+            return {"status": "error", "message": "Invalid game_id"}
+        if not (game_id.startswith("gog_") or game_id.startswith("epic_")):
+            return {"status": "error",
+                    "message": "Only gog_/epic_ ids supported here"}
+        cfg = load_config()
+        excluded = dict(cfg.get("excluded_platform_games", {}))
+        if game_id in excluded:
+            del excluded[game_id]
+            action = "included"
+        else:
+            excluded[game_id] = (name or "").strip() or game_id
+            action = "excluded"
+        cfg["excluded_platform_games"] = excluded
+        save_config(cfg)
+        return {"status": "ok", "action": action}
+
     def toggle_hide_collection(self, name):
         """Toggle whether a collection is hidden from the grid/Whole Library/
         Collection Roulette."""
@@ -1296,10 +2370,22 @@ class SteamRouletteAPI:
                               key=str.lower)
         hidden = [{"name": n,
                    "count": len(self._collections.get(n, []))} for n in hidden_names]
+        # Platform-side (GOG/Epic) excludes — separate list with prefixed IDs
+        platform_excluded_dict = cfg.get("excluded_platform_games", {}) or {}
+        platform_excluded = []
+        for gid, name in sorted(platform_excluded_dict.items(),
+                                key=lambda kv: (kv[1] or kv[0]).lower()):
+            platform = gid.split("_", 1)[0] if "_" in gid else ""
+            platform_excluded.append({
+                "id":       gid,
+                "name":     name or gid,
+                "platform": platform,
+            })
         return {
-            "status":             "ok",
-            "excluded_games":     excluded,
-            "hidden_collections": hidden,
+            "status":                   "ok",
+            "excluded_games":           excluded,
+            "excluded_platform_games":  platform_excluded,
+            "hidden_collections":       hidden,
         }
 
     # ── Logged-in Steam user info ─────────────────────────────────────────
@@ -1355,6 +2441,92 @@ class SteamRouletteAPI:
             "avatar":       avatar,
             "steamid64":    str(steamid64),
         }
+
+    # ── Per-platform user info (Steam + GOG + Epic, unified) ──────────────
+
+    def get_platform_user_info(self):
+        """Return {steam, gog, epic} each {name, avatar} for the connected user.
+        Each platform may be absent or have null name/avatar if not detected.
+        Result is cached for the process lifetime to avoid repeated network +
+        DB hits — call reload_platform_user_info() to force-refresh."""
+        if not hasattr(self, "_platform_user_cache") or self._platform_user_cache is None:
+            self._platform_user_cache = {
+                "steam": self._get_steam_user_compact(),
+                "gog":   self._get_gog_user(),
+                "epic":  self._get_epic_user(),
+            }
+        return {"status": "ok", **self._platform_user_cache}
+
+    def reload_platform_user_info(self):
+        """Clear the per-platform user cache so the next call re-fetches."""
+        self._platform_user_cache = None
+        return self.get_platform_user_info()
+
+    def _get_steam_user_compact(self):
+        """Shape Steam user info to {name, avatar} to match the unified format."""
+        info = self.get_user_info()
+        if info.get("status") != "ok":
+            return {"name": None, "avatar": None}
+        return {"name": info.get("persona_name"), "avatar": info.get("avatar")}
+
+    def _get_gog_user(self):
+        """GOG: look up the userId in Galaxy's DB, then hit GOG's public profile
+        API to resolve username + avatar.  Result lives in cache/gog_user.json
+        for 24h to avoid repeated network calls."""
+        gog_cache = os.path.join(CACHE_DIR, "gog_user.json")
+        try:
+            if os.path.isfile(gog_cache):
+                with open(gog_cache, "r", encoding="utf-8") as f:
+                    cached = json.load(f)
+                if time.time() - cached.get("fetched_at", 0) < 86400:
+                    return cached.get("info") or {"name": None, "avatar": None}
+        except (json.JSONDecodeError, OSError):
+            pass
+
+        info = {"name": None, "avatar": None}
+        conn = _galaxy_db_open()
+        if conn is None:
+            return info
+        try:
+            row = conn.execute("SELECT id FROM Users LIMIT 1").fetchone()
+            uid = row[0] if row else None
+        except sqlite3.Error:
+            uid = None
+        finally:
+            conn.close()
+        if not uid:
+            return info
+
+        try:
+            req = urllib.request.Request(
+                f"https://users.gog.com/users/{uid}",
+                headers={"User-Agent": "Mozilla/5.0 SteamRoulette"},
+            )
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            info["name"]   = data.get("username")
+            avatar         = data.get("avatar") or {}
+            # Prefer 2x medium for nice display when scaled down
+            info["avatar"] = (avatar.get("medium_2x") or avatar.get("medium")
+                              or avatar.get("small_2x") or avatar.get("small"))
+        except Exception:
+            return info
+
+        try:
+            with open(gog_cache, "w", encoding="utf-8") as f:
+                json.dump({"fetched_at": time.time(), "info": info}, f, indent=2)
+        except OSError:
+            pass
+        return info
+
+    def _get_epic_user(self):
+        """Epic: read displayName from the encrypted OAuth token blob.  No
+        avatar — Epic doesn't expose one through their basic OAuth response,
+        and the avatar endpoint requires a separate scope we don't request."""
+        tokens = epic_auth.load_tokens(CACHE_DIR)
+        if not tokens:
+            return {"name": None, "avatar": None}
+        return {"name": tokens.get("displayName"), "avatar": None}
 
     # ── Internal ──────────────────────────────────────────────────────────
 

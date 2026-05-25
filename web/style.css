@@ -159,6 +159,41 @@ button:active { opacity: 0.8; }
   white-space: nowrap;
 }
 
+/* Fallback "avatar" when a platform doesn't expose one (e.g. Epic) */
+.user-avatar-fallback {
+  width: 28px; height: 28px;
+  display: inline-flex;
+  align-items: center; justify-content: center;
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--accent-hi);
+  font-weight: 700;
+  font-size: 0.85rem;
+  flex-shrink: 0;
+}
+
+/* Stacked variant for Leave It To Fate — shows all three platforms' users */
+.user-badge.user-badge-stacked {
+  padding: 3px 6px 3px 3px;
+  gap: 4px;
+}
+.user-badge.user-badge-stacked .user-badge-mini {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px 2px 2px;
+  background: var(--bg);
+  border-radius: 14px;
+}
+.user-badge.user-badge-stacked .user-badge-mini img,
+.user-badge.user-badge-stacked .user-badge-mini .user-avatar-fallback {
+  width: 22px; height: 22px;
+  font-size: 0.72rem;
+}
+.user-badge.user-badge-stacked .user-badge-mini span {
+  font-size: 0.78rem;
+}
+
 /* ── Menu dropdown (☰ button) ─────────────────────────────────────────── */
 .menu-container { position: relative; }
 .menu-dropdown {
@@ -277,6 +312,46 @@ button:active { opacity: 0.8; }
 .manage-check:hover { border-color: var(--accent); }
 .manage-check input { accent-color: var(--accent); cursor: pointer; }
 .manage-check.checked { background: rgba(76,155,232,0.1); border-color: rgba(76,155,232,0.5); }
+
+/* ── Collection card background art ──────────────────────────────────── */
+.coll-card.has-bg-art {
+  background-size: cover;
+  background-position: center 30%;
+}
+/* Gradient scrim: very dark at top where text lives, clears in the middle
+   so the art is visible, slightly darkened again at the bottom edge */
+.coll-card.has-bg-art::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to bottom,
+    rgba(14, 17, 23, 0.91) 0%,
+    rgba(14, 17, 23, 0.55) 50%,
+    rgba(14, 17, 23, 0.78) 100%
+  );
+  border-radius: calc(var(--radius) - 1px);
+  pointer-events: none;
+  transition: background 0.18s;
+}
+/* Hover: lift the scrim to reveal more art while keeping text safe */
+.coll-card.has-bg-art:hover::before {
+  background: linear-gradient(
+    to bottom,
+    rgba(14, 17, 23, 0.86) 0%,
+    rgba(14, 17, 23, 0.38) 50%,
+    rgba(14, 17, 23, 0.62) 100%
+  );
+}
+/* Text-shadow ensures labels stay crisp over any background image */
+.coll-card.has-bg-art .coll-name {
+  text-shadow: 0 1px 8px rgba(0,0,0,1), 0 0 4px rgba(0,0,0,0.7);
+  position: relative;
+}
+.coll-card.has-bg-art .coll-count {
+  text-shadow: 0 1px 5px rgba(0,0,0,1);
+  position: relative;
+}
 
 /* ── Whole Library card (pinned at top of grid) ───────────────────────── */
 .coll-card-library {
@@ -543,7 +618,10 @@ button:active { opacity: 0.8; }
   transition: opacity 0.3s ease-out, transform 0.3s ease-out;
   pointer-events: none;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.55);
-  white-space: nowrap;
+  max-width: 80vw;
+  white-space: normal;
+  word-break: break-all;
+  text-align: center;
 }
 .toast.show       { opacity: 1; transform: translateX(-50%) translateY(0); }
 .toast-success    { background: var(--green); color: #fff; }
@@ -695,6 +773,397 @@ button:active { opacity: 0.8; }
   letter-spacing: 0.06em;
   text-align: center;
 }
+
+/* ── Platform tabs (replace logo-small in main screen header) ─────────── */
+.platform-tabs { display: flex; gap: 4px; align-items: center; }
+.platform-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  background: transparent;
+  transition: background 0.15s, color 0.15s, box-shadow 0.15s, transform 0.1s;
+}
+.platform-tab:hover { color: var(--text); background: var(--surface2); }
+.platform-tab:active { transform: translateY(1px); }
+
+.platform-icon {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  filter: drop-shadow(0 0 0 transparent);
+  transition: filter 0.18s;
+}
+.platform-tab.active .platform-icon {
+  filter: drop-shadow(0 0 6px currentColor);
+}
+.platform-label { line-height: 1; }
+
+.platform-tab--steam.active {
+  background: rgba(27,40,56,0.85); color: #66c0f4;
+  box-shadow: 0 0 0 1px rgba(102,192,244,0.45);
+}
+.platform-tab--gog.active {
+  background: rgba(90,38,150,0.75); color: #d4b8f8;
+  box-shadow: 0 0 0 1px rgba(140,90,230,0.55);
+}
+.platform-tab--epic.active {
+  background: rgba(20,20,20,0.95); color: #ffffff;
+  box-shadow: 0 0 0 1px rgba(220,220,220,0.35);
+}
+
+/* "Leave It To Fate" — distinct gradient pill that always looks like a CTA */
+.platform-tab--litf {
+  margin-left: 6px;
+  padding: 8px 18px;
+  background: linear-gradient(135deg, #2a4f7c 0%, #5b2d8f 100%);
+  color: #f0e6ff;
+  box-shadow: 0 2px 10px rgba(76, 155, 232, 0.25);
+  font-weight: 800;
+  letter-spacing: 0.07em;
+}
+.platform-tab--litf:hover {
+  background: linear-gradient(135deg, #366494 0%, #743ab0 100%);
+  color: #ffffff;
+  box-shadow: 0 4px 16px rgba(140, 90, 230, 0.45);
+  transform: translateY(-1px);
+}
+.platform-tab--litf .platform-icon {
+  filter: drop-shadow(0 0 4px rgba(255,255,255,0.4));
+}
+
+/* ── Platform collection cards (GOG, Epic, All) ───────────────────────── */
+.coll-card-gog {
+  border-color: rgba(140,80,230,0.45);
+  background: linear-gradient(135deg, rgba(75,30,120,0.35) 0%, var(--surface2) 100%);
+}
+.coll-card-gog .coll-name { color: #d4b8f8; }
+.coll-card-gog:hover { border-color: rgba(180,130,255,0.7); }
+
+.coll-card-epic {
+  border-color: rgba(190,190,190,0.22);
+  background: linear-gradient(135deg, rgba(28,28,28,0.7) 0%, var(--surface2) 100%);
+}
+.coll-card-epic .coll-name { color: #e0e0e0; }
+.coll-card-epic:hover { border-color: rgba(220,220,220,0.5); }
+
+.coll-card-all {
+  border-color: rgba(76,155,232,0.35);
+  background: linear-gradient(135deg, var(--surface) 0%, var(--surface2) 100%);
+}
+.coll-card-all .coll-name { color: var(--accent-hi); }
+.coll-card-all:hover { border-color: var(--accent); }
+
+/* ── Image-backed reel cards for GOG / Epic (uses Galaxy enrichment art) ─ */
+.reel-card.reel-card-platform-img {
+  background: #0a0d13;
+  border: 1px solid var(--border);
+  position: relative;
+  overflow: hidden;
+}
+.reel-card-platform-img img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  filter: brightness(1.05);
+}
+.reel-card-platform-overlay {
+  position: absolute;
+  bottom: 10px;
+  right: 10px;
+  z-index: 2;
+}
+
+/* ── Platform text reel cards (GOG / Epic / Steam-in-All-mode) ─────────── */
+.reel-card.reel-card-platform {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+}
+.reel-card-platform-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 24px 28px;
+  width: 100%;
+}
+.platform-game-name {
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: var(--text);
+  text-align: center;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.platform-badge {
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 3px 10px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.platform-badge--steam {
+  background: rgba(27,40,56,0.9); color: #c7d5e0;
+  border: 1px solid rgba(100,175,220,0.3);
+}
+.platform-badge--gog {
+  background: rgba(90,38,130,0.85); color: #d4b8f8;
+  border: 1px solid rgba(140,80,220,0.4);
+}
+.platform-badge--epic {
+  background: rgba(22,22,22,0.9); color: #d0d0d0;
+  border: 1px solid rgba(180,180,180,0.3);
+}
+
+/* ── Epic source picker (in Settings screen) ──────────────────────────── */
+.epic-source-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.epic-source-option {
+  display: flex;
+  gap: 10px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.epic-source-option:hover { background: var(--surface2); border-color: var(--accent); }
+.epic-source-option input { accent-color: var(--accent); margin-top: 3px; }
+.epic-source-option input:checked ~ div .epic-source-title { color: var(--accent-hi); }
+.epic-source-option:has(input:checked) {
+  border-color: rgba(76,155,232,0.6);
+  background: rgba(76,155,232,0.08);
+}
+.epic-source-title { font-weight: 700; color: var(--text); font-size: 0.92rem; }
+.epic-source-sub   { font-size: 0.78rem; color: var(--muted); margin-top: 3px; line-height: 1.45; }
+
+.epic-connection-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 0 4px;
+  font-size: 0.85rem;
+}
+.epic-connection-status { color: var(--muted); flex: 1; }
+.epic-connection-status.connected { color: var(--green-hi); }
+
+.settings-caveat {
+  margin-top: 14px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+.settings-caveat strong { color: var(--text); }
+.settings-caveat em { color: var(--accent-hi); font-style: normal; }
+
+/* ── Edition preference (same-game-multiple-editions filter) ──────────── */
+.edition-pref-label {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-bottom: 12px;
+  line-height: 1.45;
+}
+.edition-pref-options {
+  display: flex; flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.edition-pref-option {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 11px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.edition-pref-option:hover { background: var(--surface2); border-color: var(--accent); }
+.edition-pref-option input { accent-color: var(--accent); cursor: pointer; margin-top: 3px; }
+.edition-pref-option:has(input:checked) {
+  border-color: rgba(76,155,232,0.6);
+  background: rgba(76,155,232,0.08);
+}
+.edition-pref-option:has(input:checked) .edition-pref-title { color: var(--accent-hi); }
+.edition-pref-title { font-weight: 700; color: var(--text); font-size: 0.92rem; }
+.edition-pref-sub   { font-size: 0.78rem; color: var(--muted); margin-top: 3px; line-height: 1.45; }
+.edition-pref-preview {
+  font-size: 0.82rem;
+  color: var(--muted);
+  padding: 10px 0 0;
+  border-top: 1px solid var(--border);
+  line-height: 1.5;
+}
+.edition-pref-preview strong { color: var(--accent-hi); }
+
+/* ── Cross-platform dedup settings ────────────────────────────────────── */
+.dedup-toggle {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  color: var(--text);
+  margin-bottom: 12px;
+}
+.dedup-toggle input { accent-color: var(--accent); cursor: pointer; }
+.dedup-priority-block {
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  opacity: 0.45;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+.dedup-priority-block.enabled {
+  opacity: 1;
+  pointer-events: auto;
+}
+.dedup-priority-label {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-bottom: 10px;
+  line-height: 1.45;
+}
+.dedup-priority-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.dedup-priority-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.dedup-priority-rank {
+  width: 22px; height: 22px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 50%;
+  font-weight: 800;
+  font-size: 0.78rem;
+}
+.dedup-priority-name { flex: 1; font-weight: 600; color: var(--text); font-size: 0.9rem; }
+.dedup-priority-btns { display: flex; gap: 4px; }
+.dedup-priority-btn {
+  width: 28px; height: 28px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.dedup-priority-btn:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+.dedup-priority-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+.dedup-preview {
+  font-size: 0.82rem;
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  line-height: 1.5;
+}
+.dedup-preview strong { color: var(--accent-hi); }
+
+/* ── Epic OAuth connection modal ─────────────────────────────────────── */
+.epic-auth-inner { max-width: 640px; }
+.epic-auth-body {
+  padding: 18px 24px 22px;
+  color: var(--text);
+  font-size: 0.92rem;
+  line-height: 1.55;
+}
+.epic-auth-steps {
+  list-style: decimal inside;
+  display: flex; flex-direction: column;
+  gap: 18px;
+  margin-bottom: 18px;
+}
+.epic-auth-steps li { padding-left: 4px; }
+.epic-auth-steps li strong { color: var(--accent-hi); }
+.epic-auth-steps code {
+  background: var(--surface2);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 0.85em;
+  color: var(--text);
+}
+.epic-auth-actions {
+  display: flex; align-items: center; gap: 12px;
+  margin-top: 8px;
+}
+.epic-auth-input {
+  width: 100%;
+  min-height: 72px;
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 0.8rem;
+  resize: vertical;
+}
+.epic-auth-input:focus { outline: none; border-color: var(--accent); }
+.epic-auth-status {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.epic-auth-status.success { color: var(--green-hi); }
+.epic-auth-status.error   { color: #ff7c7c; }
+.epic-auth-hint {
+  font-size: 0.78rem;
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+  line-height: 1.5;
+}
+
+/* ── Helpful note shown below platform grids (e.g. "install integration") ── */
+.platform-hint {
+  grid-column: 1 / -1;
+  margin-top: 8px;
+  padding: 12px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+.platform-hint strong { color: var(--text); }
 
 /* ── Utility ──────────────────────────────────────────────────────────── */
 .hidden { display: none !important; }
