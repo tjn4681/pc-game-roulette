@@ -301,19 +301,44 @@ button:active { opacity: 0.8; }
    SPIN SCREEN
 ══════════════════════════════════════════════════════════════════════ */
 
+/* screen-spin is a fixed flex column — only the footer scrolls */
+#screen-spin { overflow: hidden; }
+
 .spin-header-center {
   display: flex; flex-direction: column; align-items: center; gap: 2px;
   flex: 1; text-align: center;
 }
 
-/* ── Spin stage (shared wrapper for reel + winner panels) ─────────────── */
-.spin-stage {
+/* ── Reel wrapper — sits directly below the header, never moves ───────── */
+.reel-wrap {
+  display: flex; justify-content: center;
+  padding: 16px 16px 12px;
+  flex-shrink: 0;
+  width: 100%;
+}
+
+/* ── Spin footer — scrollable area below the reel ─────────────────────── */
+#spin-footer {
+  flex: 1; min-height: 0;
+  overflow-y: auto;
   display: flex; flex-direction: column; align-items: center;
-  flex: 1; padding: 20px 16px 28px; gap: 20px; overflow: hidden;
+}
+
+/* Ready state: centered SPIN button */
+.footer-spin {
+  display: flex; justify-content: center; align-items: center;
+  padding: 22px 0 28px;
+  width: 100%;
+}
+
+/* Winner info: game name + meta + buttons + HLTB, no animation */
+.footer-winner {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 14px; padding: 16px 20px 28px;
+  width: 100%;
 }
 
 /* ── Reel ─────────────────────────────────────────────────────────────── */
-.reel-wrap { display: flex; justify-content: center; width: 100%; }
 
 .reel-viewport {
   position: relative;
@@ -408,7 +433,6 @@ button:active { opacity: 0.8; }
 .reel-card.winner-pulse { animation: winnerPulse 0.55s ease-out; }
 
 /* ── Spin button ──────────────────────────────────────────────────────── */
-.spin-btn-row { display: flex; justify-content: center; }
 
 .btn-spin {
   padding: 15px 72px;
@@ -427,24 +451,7 @@ button:active { opacity: 0.8; }
 .btn-spin:active:not(:disabled) { transform: translateY(0); box-shadow: none; }
 .btn-spin:disabled { opacity: 0.45; cursor: default; }
 
-/* ── Winner display ───────────────────────────────────────────────────── */
-.winner-display {
-  display: flex; flex-direction: column; align-items: center; gap: 22px; padding: 8px;
-}
-
-/* Animated in via JS after spin — slow gentle float so the winner image
-   doesn't feel like it pops/jumps abruptly into place */
-@keyframes fadeSlideUp {
-  from { opacity: 0; transform: translateY(45px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-
-.winner-img {
-  width: 640px; max-width: 100%; height: auto;
-  border-radius: 12px;
-  box-shadow: 0 8px 48px rgba(0,0,0,0.65), 0 0 0 1px rgba(76,155,232,0.18);
-}
-
+/* ── Winner info (below reel, no animation) ───────────────────────────── */
 .winner-name {
   font-size: 1.45rem; font-weight: 700; color: var(--text);
   text-align: center; max-width: 640px; line-height: 1.3;
@@ -491,7 +498,7 @@ button:active { opacity: 0.8; }
 
 /* ── Collection winner card ───────────────────────────────────────────── */
 .winner-coll-card {
-  width: 640px; max-width: 100%; min-height: 180px;
+  width: 100%; max-width: 640px; min-height: 140px;
   background: var(--surface);
   border: 1px solid rgba(76,155,232,0.4);
   border-radius: 16px;
@@ -514,12 +521,7 @@ button:active { opacity: 0.8; }
   border: 1px dashed var(--border);
   border-radius: 8px;
 }
-/* Winner panel version — same proportions as a header image */
-.non-steam-placeholder.winner-nsp {
-  width: 640px; max-width: 100%; height: 300px;
-  border-radius: 12px;
-  box-shadow: 0 8px 48px rgba(0,0,0,0.65), 0 0 0 1px var(--border);
-}
+
 .nsp-label {
   font-size: 0.75rem; font-weight: 600;
   letter-spacing: 0.14em; text-transform: uppercase;
@@ -650,6 +652,48 @@ button:active { opacity: 0.8; }
 }
 .manage-check.indeterminate span::after {
   content: " (some)"; color: var(--muted); font-size: 0.75rem;
+}
+
+/* ── HowLongToBeat time boxes ─────────────────────────────────────────── */
+.hltb-row {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  flex-wrap: wrap;
+  max-width: 640px;
+  width: 100%;
+  margin-top: -4px;
+}
+.hltb-box {
+  flex: 1;
+  min-width: 110px;
+  max-width: 200px;
+  background: var(--surface);
+  border: 1px solid rgba(76, 155, 232, 0.28);
+  border-radius: 10px;
+  padding: 12px 14px;
+  text-align: center;
+}
+.hltb-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.hltb-value {
+  font-size: 1.2rem;
+  font-weight: 800;
+  color: var(--accent-hi);
+}
+.hltb-source {
+  font-size: 0.65rem;
+  color: var(--muted);
+  opacity: 0.55;
+  margin-top: 10px;
+  letter-spacing: 0.06em;
+  text-align: center;
 }
 
 /* ── Utility ──────────────────────────────────────────────────────────── */

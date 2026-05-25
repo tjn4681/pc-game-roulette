@@ -19,6 +19,7 @@ CONFIG_FILE     = os.path.join(SCRIPT_DIR, "config.json")
 CACHE_DIR       = os.path.join(SCRIPT_DIR, "cache")
 NAMES_CACHE     = os.path.join(CACHE_DIR,  "names.json")
 ART_CACHE_DIR   = os.path.join(CACHE_DIR,  "art")
+HLTB_CACHE      = os.path.join(CACHE_DIR,  "hltb.json")
 
 os.makedirs(CACHE_DIR, exist_ok=True)
 os.makedirs(ART_CACHE_DIR, exist_ok=True)
@@ -937,6 +938,80 @@ class SteamRouletteAPI:
         save_name_cache(cache)
         return {"status": "ok", "name": name, "source": "api",
                 "playtime_minutes": self._playtimes.get(appid, 0)}
+
+    # ── HowLongToBeat completion times ───────────────────────────────────
+
+    def get_hltb_data(self, appid_str, game_name):
+        """
+        Fetch HowLongToBeat completion times for a game.
+        Requires: pip install howlongtobeatpy
+        Returns main_story, main_extra, completionist hours (floats).
+        Results are cached to cache/hltb.json.
+        """
+        try:
+            appid = int(appid_str)
+        except (ValueError, TypeError):
+            return {"status": "error", "message": "Invalid appid"}
+
+        game_name = (game_name or "").strip()
+        if not game_name or game_name.startswith("App "):
+            return {"status": "not_found"}
+
+        # Load cache
+        cache = {}
+        try:
+            if os.path.isfile(HLTB_CACHE):
+                with open(HLTB_CACHE, "r", encoding="utf-8") as f:
+                    cache = json.load(f)
+        except Exception:
+            pass
+
+        key = str(appid)
+        if key in cache:
+            hit = cache[key]
+            return {"status": "ok", **hit} if hit else {"status": "not_found"}
+
+        # Search HLTB
+        try:
+            from howlongtobeatpy import HowLongToBeat
+            results = HowLongToBeat().search(game_name)
+        except ImportError:
+            return {"status": "unavailable"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+        if not results:
+            cache[key] = None
+            self._write_hltb_cache(cache)
+            return {"status": "not_found"}
+
+        best = max(results, key=lambda r: r.similarity)
+        if best.similarity < 0.55:
+            cache[key] = None
+            self._write_hltb_cache(cache)
+            return {"status": "not_found"}
+
+        def clean(v):
+            if v is None or (isinstance(v, (int, float)) and v <= 0):
+                return None
+            return float(v)
+
+        data = {
+            "matched_name": best.game_name,
+            "main_story":    clean(best.main_story),
+            "main_extra":    clean(best.main_extra),
+            "completionist": clean(best.completionist),
+        }
+        cache[key] = data
+        self._write_hltb_cache(cache)
+        return {"status": "ok", **data}
+
+    def _write_hltb_cache(self, cache):
+        try:
+            with open(HLTB_CACHE, "w", encoding="utf-8") as f:
+                json.dump(cache, f, indent=2)
+        except Exception:
+            pass
 
     # ── Game launch ───────────────────────────────────────────────────────
 

@@ -6,7 +6,9 @@ let allCollections      = [];    // all real collections (for Collection Roulett
 let allShortcutAppids   = [];    // every non-Steam shortcut appid (from shortcuts.vdf)
 let allHiddenCollections = [];   // names the user has hidden (incl. synthetic cards)
 let spinMode            = 'game'; // 'game' | 'collection'
-let prefetchedArt       = null;  // {appid, data} — populated during doSpin, consumed by showGameWinner
+let currentWinnerAppid  = null;  // appid currently shown in footer-winner (guards stale callbacks)
+let hltbSpinPromise     = null;  // Promise<hltb result> — started during spin, consumed by loadHltbData
+let hltbSpinAppid       = null;  // which appid hltbSpinPromise is for
 let prevGameWinner    = null;   // last winning appid — used to start Spin Again reel
 let prevCollWinner    = null;   // last winning collection
 let pendingStartFrom  = null;   // startFrom value queued by spinAgain for doSpin
@@ -405,15 +407,12 @@ async function doSpin(forceNonSteam = false) {
 
   const myToken = ++currentSpinToken;
 
-  // Kick off Python pre-fetch immediately (for game mode only — collection
-  // reels are text cards and don't load images).  Cache the result so the
-  // winner panel can paint instantly without re-fetching.
-  prefetchedArt = null;
+  // Pre-fetch backend art so the reel winner card shows the reliable
+  // Python-fetched image (handles age-gated games that CDN blocks in WebView2).
   if (api && spinMode === 'game' && !isLikelyNonSteam(winner)) {
     api.get_game_art(String(winner)).then(result => {
       if (myToken !== currentSpinToken) return;
       if (result.status !== 'ok') return;
-      prefetchedArt = { appid: winner, data: result.data };
       const winnerCard = document.querySelector('#reel .reel-winner');
       if (!winnerCard) return;
       winnerCard.classList.remove('non-steam-card');
@@ -423,6 +422,19 @@ async function doSpin(forceNonSteam = false) {
       img.src = result.data;
       winnerCard.appendChild(img);
     });
+  }
+
+  // Pre-fetch HLTB during the spin so data is ready the moment the winner panel appears.
+  // Chain: get_game_name (usually instant from cache) → get_hltb_data (network, ~3s).
+  hltbSpinAppid    = winner;
+  hltbSpinPromise  = null;
+  if (api && spinMode === 'game' && !isLikelyNonSteam(winner)) {
+    hltbSpinPromise = (async () => {
+      const nameResult = await api.get_game_name(String(winner));
+      if (myToken !== currentSpinToken) return null;
+      if (nameResult.status !== 'ok') return null;
+      return api.get_hltb_data(String(winner), nameResult.name);
+    })();
   }
 
   if (spinMode === 'collection') {
@@ -438,93 +450,53 @@ async function doSpin(forceNonSteam = false) {
   playLanding();
   await delay(650);
 
-  // Prepare the winner panel BEFORE showing it — sets the image content
-  // while the panel is still display:none, so when it appears it's already
-  // fully painted and there's no flash/jump as the src updates.
-  const stageWinner = document.getElementById('stage-winner');
+  // Show winner info below the reel — no animation, no stage swap
   if (spinMode === 'collection') showCollectionWinner(winner);
   else                           showGameWinner(winner);
 
-  // Now swap stages
-  document.getElementById('stage-reel').classList.add('hidden');
-  stageWinner.classList.remove('hidden');
-
-  // Slow gentle float-up — easeOutExpo for a smooth deceleration
-  const display = stageWinner.querySelector('.winner-display');
-  display.style.animation = 'none'; void display.offsetWidth;
-  display.style.animation = 'fadeSlideUp 0.8s cubic-bezier(0.22, 1, 0.36, 1) both';
+  document.getElementById('footer-spin').classList.add('hidden');
+  document.getElementById('footer-winner').classList.remove('hidden');
 }
 
 function showGameWinner(appid) {
-  prevGameWinner = appid;
+  prevGameWinner     = appid;
+  currentWinnerAppid = appid;
 
-  const img = document.getElementById('winner-img');
-  img.style.display = '';          // clear inline style left by non-Steam handler
-  img.classList.remove('hidden');
-  img.parentNode.querySelectorAll('.winner-nsp').forEach(el => el.remove());
-  img.onerror = null;
-
-  const setNonSteam = () => {
-    img.style.display = 'none';
-    img.after(nonSteamPlaceholder('winner-nsp', appid));
-  };
-
-  document.getElementById('stage-winner').dataset.appid = appid;
-
-  // Use the art we already pre-fetched during doSpin for INSTANT paint —
-  // eliminates the disappear/reappear flicker on the winner card.
-  if (prefetchedArt && prefetchedArt.appid === appid) {
-    img.src = prefetchedArt.data;
-    prefetchedArt = null;
-  } else if (api) {
-    img.removeAttribute('src');
-    api.get_game_art(String(appid)).then(result => {
-      if (document.getElementById('stage-winner').dataset.appid !== String(appid)) return;
-      if (result.status === 'ok') img.src = result.data;
-      else                        setNonSteam();
-    });
-  } else {
-    img.onerror = setNonSteam;
-    img.src = headerUrl(appid);
-  }
-
-  // Exclude button (game mode only)
+  // Exclude button
   const exclBtn = document.getElementById('btn-exclude');
   exclBtn.classList.remove('hidden');
-  exclBtn.textContent = 'Exclude from Future Spins';
   exclBtn.onclick = () => excludeWinningGame(appid);
 
-  // Reset winner-meta line — will be populated by get_game_name response below
+  // Reset meta and HLTB — populated async below
   const metaEl = document.getElementById('winner-meta');
   metaEl.textContent = '';
   metaEl.classList.add('hidden');
+  const hltbRow = document.getElementById('hltb-row');
+  if (hltbRow) { hltbRow.classList.add('hidden'); hltbRow.innerHTML = ''; }
 
   const nameEl = document.getElementById('winner-name');
   nameEl.textContent = 'Loading…';
   nameEl.classList.remove('hidden');
 
-  const launchBtn = document.getElementById('btn-launch');
-  launchBtn.classList.remove('hidden');
-  launchBtn.onclick = () => api && api.launch_game(String(appid));
-
+  document.getElementById('btn-launch').classList.remove('hidden');
+  document.getElementById('btn-launch').onclick = () => api && api.launch_game(String(appid));
   document.getElementById('winner-coll-card').classList.add('hidden');
   document.getElementById('btn-spin-game').classList.add('hidden');
-
   document.getElementById('btn-spin-again').textContent = 'Spin Again';
 
   if (api) {
     api.get_game_name(String(appid)).then(result => {
-      if (document.getElementById('stage-winner').dataset.appid !== String(appid)) return;
-      nameEl.textContent = result.status === 'ok' ? result.name : `App ${appid}`;
-      const minutes = result.playtime_minutes || 0;
-      const meta = document.getElementById('winner-meta');
-      const pretty = formatPlaytime(minutes);
+      if (currentWinnerAppid !== appid) return;
+      const name = result.status === 'ok' ? result.name : `App ${appid}`;
+      nameEl.textContent = name;
+      const pretty = formatPlaytime(result.playtime_minutes || 0);
       if (pretty) {
-        meta.textContent = `${pretty} played`;
-        meta.classList.remove('hidden');
+        metaEl.textContent = `${pretty} played`;
+        metaEl.classList.remove('hidden');
       } else {
-        meta.classList.add('hidden');
+        metaEl.classList.add('hidden');
       }
+      if (result.status === 'ok' && !isLikelyNonSteam(appid)) loadHltbData(appid, name);
     });
   } else {
     nameEl.textContent = `App ${appid}`;
@@ -532,13 +504,15 @@ function showGameWinner(appid) {
 }
 
 function showCollectionWinner(collection) {
-  prevCollWinner = collection;
+  prevCollWinner     = collection;
+  currentWinnerAppid = null;  // collection mode — no game appid
 
   // Hide game-mode elements
-  document.getElementById('winner-img').classList.add('hidden');
   document.getElementById('winner-name').classList.add('hidden');
   document.getElementById('btn-launch').classList.add('hidden');
   document.getElementById('btn-exclude').classList.add('hidden');
+  const hltbRow = document.getElementById('hltb-row');
+  if (hltbRow) { hltbRow.classList.add('hidden'); hltbRow.innerHTML = ''; }
 
   // Show collection card
   document.getElementById('winner-coll-card').classList.remove('hidden');
@@ -558,16 +532,15 @@ async function spinAgain() {
   const startFrom = spinMode === 'collection' ? prevCollWinner : prevGameWinner;
   pendingStartFrom = startFrom;
 
-  document.getElementById('stage-winner').classList.add('hidden');
-  document.getElementById('stage-reel').classList.remove('hidden');
-  document.getElementById('btn-spin').disabled    = false;
-  document.getElementById('btn-spin').textContent = 'SPIN';
+  // Hide winner info instantly — reel stays visible the whole time
+  document.getElementById('footer-winner').classList.add('hidden');
+  currentWinnerAppid = null;
 
-  // Pre-build so the reel shows the previous winner at position 0 during the brief transition
+  // Pre-build so the reel shows the previous winner at position 0 briefly
   if (spinMode === 'collection') buildCollectionReel(allCollections, startFrom);
   else                           buildGameReel(currentCollection.appids, startFrom);
 
-  await delay(120);
+  await delay(80);
   doSpin();
 }
 
@@ -586,10 +559,11 @@ function openSpin(collection) {
   document.getElementById('spin-coll-name').textContent  = collection.name;
   document.getElementById('spin-coll-count').textContent = games + tail;
 
-  document.getElementById('stage-reel').classList.remove('hidden');
-  document.getElementById('stage-winner').classList.add('hidden');
+  document.getElementById('footer-spin').classList.remove('hidden');
+  document.getElementById('footer-winner').classList.add('hidden');
   document.getElementById('btn-spin').disabled    = false;
   document.getElementById('btn-spin').textContent = 'SPIN';
+  currentWinnerAppid = null;
 
   buildGameReel(collection.appids);
   showScreen('screen-spin');
@@ -603,10 +577,11 @@ function openCollectionRoulette() {
   document.getElementById('spin-coll-count').textContent =
     `${allCollections.length} collection${allCollections.length === 1 ? '' : 's'}`;
 
-  document.getElementById('stage-reel').classList.remove('hidden');
-  document.getElementById('stage-winner').classList.add('hidden');
+  document.getElementById('footer-spin').classList.remove('hidden');
+  document.getElementById('footer-winner').classList.add('hidden');
   document.getElementById('btn-spin').disabled    = false;
   document.getElementById('btn-spin').textContent = 'SPIN';
+  currentWinnerAppid = null;
 
   buildCollectionReel(allCollections);
   showScreen('screen-spin');
@@ -1233,6 +1208,54 @@ async function init() {
       ]);
     }
   }, 1500);
+}
+
+// ── HowLongToBeat ─────────────────────────────────────────────────────────
+
+async function loadHltbData(appid, gameName) {
+  const row = document.getElementById('hltb-row');
+  if (!api || !row) return;
+
+  // If this spin already kicked off a fetch, await it (likely done or nearly done).
+  // Otherwise fall back to fetching now.
+  let result;
+  if (hltbSpinAppid === appid && hltbSpinPromise) {
+    result = await hltbSpinPromise;
+    hltbSpinPromise = null;
+    hltbSpinAppid   = null;
+  } else {
+    result = await api.get_hltb_data(String(appid), gameName);
+  }
+
+  // Guard: user may have spun again while we were waiting
+  if (!result || currentWinnerAppid !== appid) return;
+  if (result.status !== 'ok') return;
+
+  const boxes = [
+    { label: 'Main Story',    value: result.main_story },
+    { label: 'Main + Sides',  value: result.main_extra },
+    { label: 'Completionist', value: result.completionist },
+  ].filter(b => b.value && b.value > 0);
+
+  if (!boxes.length) return;
+
+  row.innerHTML =
+    boxes.map(b => `
+      <div class="hltb-box">
+        <div class="hltb-label">${esc(b.label)}</div>
+        <div class="hltb-value">${formatHltbHours(b.value)}</div>
+      </div>`).join('') +
+    `<div class="hltb-source" style="width:100%">via HowLongToBeat</div>`;
+  row.classList.remove('hidden');
+}
+
+function formatHltbHours(hours) {
+  if (!hours || hours <= 0) return '—';
+  const h = Math.floor(hours);
+  const frac = hours - h;
+  if (h === 0) return `${Math.round(hours * 60)} Min`;
+  if (frac >= 0.4 && frac < 0.6) return `${h}½ Hrs`;
+  return `${Math.round(hours)} Hrs`;
 }
 
 // ── Utility ───────────────────────────────────────────────────────────────

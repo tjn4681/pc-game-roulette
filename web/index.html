@@ -137,31 +137,30 @@
       <div style="width:48px"></div>
     </header>
 
-    <!-- Reel stage -->
-    <div id="stage-reel" class="spin-stage">
-      <div class="reel-wrap">
-        <div class="reel-viewport">
-          <div class="reel-grad reel-grad-top"></div>
-          <div id="reel" class="reel"></div>
-          <div class="reel-grad reel-grad-bottom"></div>
-          <div class="reel-frame"></div>
-        </div>
-      </div>
-      <div class="spin-btn-row">
-        <button id="btn-spin" class="btn-spin">SPIN</button>
+    <!-- Reel — always visible, never swapped out or animated away -->
+    <div class="reel-wrap">
+      <div class="reel-viewport">
+        <div class="reel-grad reel-grad-top"></div>
+        <div id="reel" class="reel"></div>
+        <div class="reel-grad reel-grad-bottom"></div>
+        <div class="reel-frame"></div>
       </div>
     </div>
 
-    <!-- Winner stage -->
-    <div id="stage-winner" class="spin-stage hidden">
-      <div class="winner-display">
+    <!-- Footer: either the SPIN button (initial) or winner info (after landing) -->
+    <div id="spin-footer" class="spin-footer">
 
-        <!-- GAME MODE: header image + name -->
-        <img id="winner-img" class="winner-img" src="" alt="">
+      <!-- Ready state -->
+      <div id="footer-spin" class="footer-spin">
+        <button id="btn-spin" class="btn-spin">SPIN</button>
+      </div>
+
+      <!-- Winner info — appears instantly below the reel, no animation -->
+      <div id="footer-winner" class="footer-winner hidden">
         <div id="winner-name" class="winner-name">Loading…</div>
         <div id="winner-meta" class="winner-meta hidden"></div>
 
-        <!-- COLLECTION MODE: styled name card -->
+        <!-- Collection roulette mode card -->
         <div id="winner-coll-card" class="winner-coll-card hidden">
           <div id="winner-coll-title" class="winner-coll-title"></div>
           <div id="winner-coll-sub"   class="winner-coll-sub"></div>
@@ -171,10 +170,14 @@
           <button id="btn-launch"     class="btn-launch hidden">&#9654;&nbsp;Launch</button>
           <button id="btn-spin-game"  class="btn-primary hidden">Spin a Game</button>
           <button id="btn-spin-again" class="btn-primary">Spin Again</button>
-          <button id="btn-exclude"    class="btn-ghost btn-exclude hidden">Don't show again</button>
+          <button id="btn-exclude"    class="btn-ghost btn-exclude hidden">Exclude from Future Spins</button>
           <button id="btn-back-colls" class="btn-ghost">&#8592; Collections</button>
         </div>
+
+        <!-- HowLongToBeat completion times -->
+        <div id="hltb-row" class="hltb-row hidden"></div>
       </div>
+
     </div>
   </div>
 
