@@ -39,8 +39,42 @@ EPIC_LIB_CACHE  = os.path.join(CACHE_DIR,  "epic_library.json")
 EPIC_LIB_CACHE_TTL_SECONDS = 60 * 60   # 1 hour
 
 # GOG Galaxy stores its full owned library — across GOG itself and any platform
-# integrations the user has set up (Epic, Steam, Origin, etc.) — in a SQLite DB.
-GOG_GALAXY_DB   = r"C:\ProgramData\GOG.com\Galaxy\storage\galaxy-2.0.db"
+# integrations the user has set up (Epic, Steam, Origin, etc.) — in a SQLite DB
+# under %ProgramData%.  We use the env var so this works for users whose
+# Windows install puts ProgramData on a non-C: drive.
+_PROGRAM_DATA = os.environ.get("ProgramData") or r"C:\ProgramData"
+GOG_GALAXY_DB = os.path.join(
+    _PROGRAM_DATA, "GOG.com", "Galaxy", "storage", "galaxy-2.0.db",
+)
+
+
+def find_epic_manifests_dir():
+    """Locate Epic Games Launcher's Manifests folder.
+
+    Epic helpfully stores its AppDataPath under
+      HKLM\\SOFTWARE\\WOW6432Node\\Epic Games\\EpicGamesLauncher\\AppDataPath
+    so we consult the registry first (works even if Epic is installed to a
+    non-default drive).  Falls back to the standard %ProgramData% location."""
+    candidates = []
+    for hive, subkey in [
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Epic Games\EpicGamesLauncher"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Epic Games\EpicGamesLauncher"),
+    ]:
+        try:
+            with winreg.OpenKey(hive, subkey) as k:
+                val, _ = winreg.QueryValueEx(k, "AppDataPath")
+                if val:
+                    candidates.append(os.path.join(val, "Manifests"))
+        except OSError:
+            continue
+    # Fallback: %ProgramData%\Epic\EpicGamesLauncher\Data\Manifests
+    candidates.append(os.path.join(
+        _PROGRAM_DATA, "Epic", "EpicGamesLauncher", "Data", "Manifests",
+    ))
+    for p in candidates:
+        if os.path.isdir(p):
+            return p
+    return None
 
 os.makedirs(CACHE_DIR, exist_ok=True)
 os.makedirs(ART_CACHE_DIR, exist_ok=True)
@@ -1655,8 +1689,8 @@ class SteamRouletteAPI:
 
     def _get_epic_games_manifests(self):
         """Read the launcher's per-game manifest folder for installed Epic games."""
-        manifests_path = r"C:\ProgramData\Epic\EpicGamesLauncher\Data\Manifests"
-        if not os.path.isdir(manifests_path):
+        manifests_path = find_epic_manifests_dir()
+        if not manifests_path:
             return {"status": "ok", "games": [], "source": "none"}
 
         skip_kw = {
@@ -1903,6 +1937,25 @@ class SteamRouletteAPI:
                 "gog_hidden":   len(gog_hidden),
                 "epic_hidden":  len(epic_hidden),
             },
+        }
+
+    def detect_platforms(self):
+        """Report which of the three supported launchers we found on this PC.
+
+        Used by the frontend to (a) decide which tab to auto-select on a fresh
+        install and (b) show a friendly empty state when the user has none of
+        them installed.  Cheap to call — only stats file paths and registry."""
+        steam_path  = self._steam_path or find_steam_path()
+        galaxy_ok   = os.path.isfile(GOG_GALAXY_DB)
+        epic_dir    = find_epic_manifests_dir()
+        epic_oauth  = epic_auth.load_tokens(CACHE_DIR) is not None
+        return {
+            "status": "ok",
+            "steam":     bool(steam_path),
+            "gog":       galaxy_ok,
+            "epic":      bool(epic_dir) or epic_oauth,
+            "any":       bool(steam_path or galaxy_ok or epic_dir or epic_oauth),
+            "epic_oauth_connected": epic_oauth,
         }
 
     def get_sound_enabled(self):

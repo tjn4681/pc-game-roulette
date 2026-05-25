@@ -244,6 +244,32 @@ function renderAccountPicker(accounts) {
   showScreen('screen-pick');
 }
 
+// Friendly empty state for users with none of Steam/GOG/Epic installed.
+// Replaces the Steam-specific error screen content with something that
+// actually explains the situation.
+function showNoPlatformsScreen() {
+  const screen = document.getElementById('screen-error');
+  if (!screen) return;
+  const inner = screen.querySelector('.center-stack');
+  if (inner) {
+    inner.innerHTML = `
+      <div class="logo">PC GAME ROULETTE</div>
+      <p class="subtitle">No game launchers detected on this PC.</p>
+      <p class="hint">
+        This app picks random games from your installed launchers — but it
+        looks like you don't have any of them set up yet.<br><br>
+        To use it, install at least one of:<br>
+        &bull; <strong>Steam</strong><br>
+        &bull; <strong>GOG Galaxy</strong><br>
+        &bull; <strong>Epic Games Launcher</strong>
+        <br><br>
+        Then re-launch the app — your library will be detected automatically.
+      </p>
+    `;
+  }
+  showScreen('screen-error');
+}
+
 // ── Result router ─────────────────────────────────────────────────────────
 
 function handleLoadResult(result) {
@@ -2222,7 +2248,28 @@ async function init() {
   });
 
   if (api) {
-    handleLoadResult(await api.auto_load());
+    // Detect which launchers exist on this PC.  Used to (a) show a friendly
+    // empty state when none are installed and (b) auto-switch to whatever
+    // platform IS available if Steam isn't.
+    const detected = await api.detect_platforms();
+    if (!detected.any) {
+      showNoPlatformsScreen();
+      loadUserInfo();
+      refreshSoundSettings();
+      return;
+    }
+
+    const result = await api.auto_load();
+    if (result.status !== 'ok' && (detected.gog || detected.epic)) {
+      // Steam isn't usable but the user has GOG or Epic — open the first
+      // available platform tab instead of dumping them on the Steam error
+      // screen.
+      switchPlatform(detected.gog ? 'gog' : 'epic');
+      loadUserInfo();
+      refreshSoundSettings();
+      return;
+    }
+    handleLoadResult(result);
     loadUserInfo();
     refreshSoundSettings();   // pull persisted sound on/off into module state
     return;
