@@ -13,9 +13,10 @@ let prevGameWinner    = null;   // last winning appid (game mode) or game obj (p
 let prevCollWinner    = null;   // last winning collection
 let pendingStartFrom  = null;   // startFrom value queued by spinAgain for doSpin
 
-let currentPlatform      = 'steam'; // 'steam' | 'gog' | 'epic' | 'all'
+let currentPlatform      = 'steam'; // 'steam' | 'gog' | 'epic' | 'battlenet' | 'all'
 let gogGames             = [];      // [{id, raw_id, name, platform}] from get_gog_games()
 let epicGames            = [];      // [{id, raw_id, name, platform}] from get_epic_games()
+let battlenetGames       = [];      // [{id, raw_id, name, platform}] from get_battlenet_games()
 let currentPlatformGames = [];      // active pool when spinMode === 'platform'
 
 // Two separate filter sources that both produce per-platform ID exclude sets:
@@ -828,8 +829,9 @@ async function excludePlatformWinningGame(game) {
   // Drop the game from the current spin pool so spinAgain doesn't pick it
   currentPlatformGames = currentPlatformGames.filter(g => g.id !== game.id);
   // Also clean it out of the cached lists so re-entering the tab is consistent
-  if (game.platform === 'gog')  gogGames  = gogGames.filter(g => g.id !== game.id);
-  if (game.platform === 'epic') epicGames = epicGames.filter(g => g.id !== game.id);
+  if (game.platform === 'gog')        gogGames       = gogGames.filter(g => g.id !== game.id);
+  if (game.platform === 'epic')       epicGames      = epicGames.filter(g => g.id !== game.id);
+  if (game.platform === 'battlenet')  battlenetGames = battlenetGames.filter(g => g.id !== game.id);
   prevGameWinner = null;
   showToast(`Excluded "${game.name}" from future spins`);
   spinAgain();
@@ -844,10 +846,77 @@ async function openSettings() {
   }
   renderSettings(r);
   await refreshEpicSettings();
+  await refreshBattlenetSource();
   await refreshDedupSettings();
   await refreshEditionPreference();
   await refreshSoundSettings();
+  await refreshLauncherVisibility();
   showScreen('screen-settings');
+}
+
+// ── Per-launcher visibility (Settings) ───────────────────────────────────
+
+let launcherStatusCache = null;
+
+async function refreshLauncherVisibility() {
+  if (!api) return;
+  const r = await api.get_launcher_status();
+  if (r.status !== 'ok') return;
+  launcherStatusCache = r.launchers;
+  renderLauncherVisibilityList(r.launchers);
+  applyLauncherVisibility(r.launchers);
+}
+
+function renderLauncherVisibilityList(launchers) {
+  const list = document.getElementById('launcher-vis-list');
+  if (!list) return;
+  list.innerHTML = '';
+  launchers.forEach(l => {
+    const row = document.createElement('label');
+    row.className = 'launcher-vis-item';
+    const statusClass = l.installed ? '' : 'not-installed';
+    const statusText  = l.installed ? '' : 'not installed';
+    row.innerHTML = `
+      <input type="checkbox" data-launcher="${l.id}" ${l.enabled ? 'checked' : ''}>
+      <span class="launcher-vis-name">${esc(l.name)}</span>
+      <span class="launcher-vis-status ${statusClass}">${statusText}</span>
+    `;
+    row.querySelector('input').addEventListener('change', async (e) => {
+      if (!api) return;
+      const upd = await api.set_launcher_enabled(l.id, e.target.checked);
+      if (upd.status === 'ok') {
+        launcherStatusCache = upd.launchers;
+        applyLauncherVisibility(upd.launchers);
+      }
+    });
+    list.appendChild(row);
+  });
+}
+
+// Hide tab buttons for launchers the user has disabled.  Called both at app
+// startup (from init) and after Settings changes (live update).
+function applyLauncherVisibility(launchers) {
+  launchers.forEach(l => {
+    const tab = document.getElementById(`tab-${l.id}`);
+    if (!tab) return;
+    tab.style.display = l.enabled ? '' : 'none';
+  });
+  // If the user disabled their currently-active tab, fall back to Steam
+  // (or any remaining enabled tab) so we don't leave them stranded.
+  const activeTab = document.querySelector('.platform-tab.active');
+  if (activeTab && activeTab.style.display === 'none') {
+    const fallback = launchers.find(l => l.enabled);
+    if (fallback) switchPlatform(fallback.id);
+  }
+}
+
+async function refreshBattlenetSource() {
+  if (!api) return;
+  const r = await api.get_battlenet_source();
+  if (r.status !== 'ok') return;
+  document.querySelectorAll('input[name="battlenet-source"]').forEach(el => {
+    el.checked = (el.value === r.source);
+  });
 }
 
 async function refreshSoundSettings() {
@@ -901,7 +970,7 @@ async function refreshEditionPreview() {
 
 // ── Cross-platform duplicate settings ──────────────────────────────────────
 
-const _PLATFORM_LABELS = { steam: 'Steam', gog: 'GOG', epic: 'Epic' };
+const _PLATFORM_LABELS = { steam: 'Steam', gog: 'GOG', epic: 'Epic', battlenet: 'Battle.net' };
 
 async function refreshDedupSettings() {
   if (!api) return;
@@ -1430,10 +1499,11 @@ async function reloadCollections() {
     grid.innerHTML = '';
     await Promise.all([
       (async () => {
-        if (currentPlatform === 'gog')  await loadGogGrid(grid, empty);
-        if (currentPlatform === 'epic') await loadEpicGrid(grid, empty);
+        if (currentPlatform === 'gog')       await loadGogGrid(grid, empty);
+        if (currentPlatform === 'epic')      await loadEpicGrid(grid, empty);
+        if (currentPlatform === 'battlenet') await loadBattlenetGrid(grid, empty);
         // 'all' is the LITF action button — re-running it means re-spinning
-        if (currentPlatform === 'all')  await leaveItToFate();
+        if (currentPlatform === 'all')       await leaveItToFate();
       })(),
       delay(800),
     ]);
@@ -1666,8 +1736,44 @@ async function switchPlatform(platform) {
   empty.classList.add('hidden');
   showScreen('screen-main');
 
-  if (platform === 'gog')  await loadGogGrid(grid, empty);
-  if (platform === 'epic') await loadEpicGrid(grid, empty);
+  if (platform === 'gog')       await loadGogGrid(grid, empty);
+  if (platform === 'epic')      await loadEpicGrid(grid, empty);
+  if (platform === 'battlenet') await loadBattlenetGrid(grid, empty);
+}
+
+async function loadBattlenetGrid(grid, empty) {
+  if (!api) { empty.classList.remove('hidden'); return; }
+  const [result, tagResult] = await Promise.all([
+    api.get_battlenet_games(),
+    api.get_galaxy_collections('battlenet'),
+  ]);
+  if (result.status === 'ok' && result.games.length > 0) {
+    battlenetGames = await filterDuplicates(result.games);
+    grid.appendChild(makePlatformCard('battlenet', battlenetGames));
+    appendTagCollections(grid, 'battlenet', tagResult, battlenetGames);
+    empty.classList.add('hidden');
+
+    // Native source = installed games only — surface that to the user so
+    // they understand why their library looks smaller than expected.
+    if (result.source === 'native') {
+      const note = document.createElement('div');
+      note.className = 'platform-hint';
+      note.innerHTML =
+        `Only showing <strong>installed</strong> Battle.net games. ` +
+        `To see your full owned library, install the ` +
+        `<strong>Battle.net integration</strong> in GOG Galaxy ` +
+        `(Settings → Integrations → search "Battle.net").`;
+      grid.appendChild(note);
+    }
+  } else {
+    battlenetGames = [];
+    empty.innerHTML =
+      '<p>No Battle.net games found.</p>' +
+      '<p class="hint">For your <strong>full owned Battle.net library</strong>, install the ' +
+      'Battle.net integration in GOG Galaxy (Settings → Integrations → search "Battle.net"). ' +
+      'Without it, only installed Blizzard games will appear.</p>';
+    empty.classList.remove('hidden');
+  }
 }
 
 // ── Leave It To Fate — combined-platform auto-spinning button ──────────────
@@ -1684,12 +1790,17 @@ async function leaveItToFate() {
   currentPlatform = 'all';
   renderUserBadgeFor('all');
 
-  // Fetch GOG + Epic in parallel; Steam data is already loaded in memory
-  const [gogResult, epicResult] = api
-    ? await Promise.all([api.get_gog_games(), api.get_epic_games()])
-    : [{status: 'ok', games: []}, {status: 'ok', games: []}];
-  gogGames  = gogResult.status  === 'ok' ? gogResult.games  : [];
-  epicGames = epicResult.status === 'ok' ? epicResult.games : [];
+  // Fetch every non-Steam platform in parallel; Steam is already in memory
+  const [gogResult, epicResult, bnetResult] = api
+    ? await Promise.all([
+        api.get_gog_games(),
+        api.get_epic_games(),
+        api.get_battlenet_games(),
+      ])
+    : [{status: 'ok', games: []}, {status: 'ok', games: []}, {status: 'ok', games: []}];
+  gogGames       = gogResult.status  === 'ok' ? gogResult.games  : [];
+  epicGames      = epicResult.status === 'ok' ? epicResult.games : [];
+  battlenetGames = bnetResult.status === 'ok' ? bnetResult.games : [];
 
   let steamIds = [...new Set([
     ...allCollections.flatMap(c => c.appids),
@@ -1700,11 +1811,13 @@ async function leaveItToFate() {
   const filteredSteam = await filterDuplicates(steamIds);
   const filteredGog   = await filterDuplicates(gogGames);
   const filteredEpic  = await filterDuplicates(epicGames);
+  const filteredBnet  = await filterDuplicates(battlenetGames);
   // Mutate module-level lists so the spin sources match what we just spawned
-  gogGames  = filteredGog;
-  epicGames = filteredEpic;
+  gogGames       = filteredGog;
+  epicGames      = filteredEpic;
+  battlenetGames = filteredBnet;
 
-  const allGames = [...filteredSteam, ...filteredGog, ...filteredEpic];
+  const allGames = [...filteredSteam, ...filteredGog, ...filteredEpic, ...filteredBnet];
   if (allGames.length === 0) {
     showToast('No games found across any platform', 'error');
     return;
@@ -1718,9 +1831,10 @@ async function leaveItToFate() {
 
   document.getElementById('spin-coll-name').textContent  = 'Leave It To Fate';
   const parts = [];
-  if (steamIds.length)  parts.push(`${steamIds.length.toLocaleString()} Steam`);
-  if (gogGames.length)  parts.push(`${gogGames.length.toLocaleString()} GOG`);
-  if (epicGames.length) parts.push(`${epicGames.length.toLocaleString()} Epic`);
+  if (steamIds.length)       parts.push(`${steamIds.length.toLocaleString()} Steam`);
+  if (gogGames.length)       parts.push(`${gogGames.length.toLocaleString()} GOG`);
+  if (epicGames.length)      parts.push(`${epicGames.length.toLocaleString()} Epic`);
+  if (battlenetGames.length) parts.push(`${battlenetGames.length.toLocaleString()} Battle.net`);
   document.getElementById('spin-coll-count').textContent = parts.join(' · ');
 
   document.getElementById('footer-spin').classList.remove('hidden');
@@ -1818,7 +1932,8 @@ function appendTagCollections(grid, platform, tagResult, games) {
 
 function makeTagCard(platform, tagName, games) {
   const card = document.createElement('div');
-  const CLASS = { gog: 'coll-card-gog', epic: 'coll-card-epic' }[platform] || '';
+  const CLASS = { gog: 'coll-card-gog', epic: 'coll-card-epic',
+                  battlenet: 'coll-card-battlenet' }[platform] || '';
   card.className = `coll-card ${CLASS} coll-card-tag`;
   card.innerHTML = `
     <div class="coll-name">${esc(tagName)}</div>
@@ -1849,8 +1964,8 @@ function makeTagCard(platform, tagName, games) {
 
 function makePlatformCard(platform, games, subtitle = null) {
   const card = document.createElement('div');
-  const NAMES   = { gog: 'GOG Library', epic: 'Epic Library', all: 'All Libraries' };
-  const CLASSES = { gog: 'coll-card-gog', epic: 'coll-card-epic', all: 'coll-card-all' };
+  const NAMES   = { gog: 'GOG Library', epic: 'Epic Library', battlenet: 'Battle.net Library', all: 'All Libraries' };
+  const CLASSES = { gog: 'coll-card-gog', epic: 'coll-card-epic', battlenet: 'coll-card-battlenet', all: 'coll-card-all' };
   card.className = `coll-card ${CLASSES[platform] || ''}`;
 
   const sub = subtitle !== null
@@ -1906,7 +2021,7 @@ function openPlatformSpin(platform, games) {
   spinMode             = 'platform';
   currentPlatformGames = games;
 
-  const NAMES = { gog: 'GOG Library', epic: 'Epic Library', all: 'All Libraries' };
+  const NAMES = { gog: 'GOG Library', epic: 'Epic Library', battlenet: 'Battle.net Library', all: 'All Libraries' };
   document.getElementById('spin-coll-name').textContent  = NAMES[platform] || platform;
   document.getElementById('spin-coll-count').textContent =
     `${games.length.toLocaleString()} game${games.length === 1 ? '' : 's'}`;
@@ -1938,7 +2053,7 @@ function buildPlatformReel(games, startFrom = null, forcedWinner = null) {
 
   // Show platform badge only in mixed-platform (All) mode
   const isMulti = new Set(games.map(g => g.platform)).size > 1;
-  const PLABELS = { gog: 'GOG', epic: 'Epic', steam: 'Steam' };
+  const PLABELS = { gog: 'GOG', epic: 'Epic', steam: 'Steam', battlenet: 'Battle.net' };
 
   sequence.forEach((game, i) => {
     const isWinner = i === sequence.length - 1;
@@ -2052,6 +2167,17 @@ function showPlatformWinner(game) {
       // app_name is present on OAuth-sourced games — lets us skip Galaxy
       // and launch via Epic's own URI scheme directly.
       const r = await api.launch_epic_game(game.raw_id, game.source, game.app_name || null);
+      reportLaunch(r);
+    };
+    if (game.name) loadHltbData(game.id, game.name);
+
+  } else if (game.platform === 'battlenet') {
+    nameEl.textContent = game.name;
+    metaEl.textContent = _platformMeta('Battle.net', game);
+    metaEl.classList.remove('hidden');
+    launchBtn.onclick  = async () => {
+      if (!api) return;
+      const r = await api.launch_battlenet_game(game.raw_id, game.source);
       reportLaunch(r);
     };
     if (game.name) loadHltbData(game.id, game.name);
@@ -2180,6 +2306,16 @@ async function init() {
     invalidateDedupCache();
   });
 
+  // Battle.net source picker
+  document.querySelectorAll('input[name="battlenet-source"]').forEach(el => {
+    el.addEventListener('change', async () => {
+      if (!api || !el.checked) return;
+      await api.set_battlenet_source(el.value);
+      // Invalidate excludes since the source change may add/remove games
+      invalidateAllExcludes();
+    });
+  });
+
   // Edition preference: any of the three radios
   document.querySelectorAll('input[name="edition-pref"]').forEach(el => {
     el.addEventListener('change', async () => {
@@ -2205,7 +2341,7 @@ async function init() {
     renderManageList(e.target.value);
   });
   // Platform tab switchers
-  ['steam', 'gog', 'epic'].forEach(p => {
+  ['steam', 'gog', 'epic', 'battlenet'].forEach(p => {
     document.getElementById(`tab-${p}`).addEventListener('click', () => switchPlatform(p));
   });
   // Leave It To Fate — action button, not a tab destination
@@ -2271,7 +2407,8 @@ async function init() {
     }
     handleLoadResult(result);
     loadUserInfo();
-    refreshSoundSettings();   // pull persisted sound on/off into module state
+    refreshSoundSettings();          // pull persisted sound on/off
+    refreshLauncherVisibility();     // hide tabs for any disabled launchers
     return;
   }
 

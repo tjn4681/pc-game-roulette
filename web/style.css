@@ -816,6 +816,10 @@ button:active { opacity: 0.8; }
   background: rgba(20,20,20,0.95); color: #ffffff;
   box-shadow: 0 0 0 1px rgba(220,220,220,0.35);
 }
+.platform-tab--battlenet.active {
+  background: rgba(0,80,160,0.75); color: #8cd0ff;
+  box-shadow: 0 0 0 1px rgba(110,180,255,0.55);
+}
 
 /* "Leave It To Fate" — distinct gradient pill that always looks like a CTA */
 .platform-tab--litf {
@@ -851,6 +855,13 @@ button:active { opacity: 0.8; }
 }
 .coll-card-epic .coll-name { color: #e0e0e0; }
 .coll-card-epic:hover { border-color: rgba(220,220,220,0.5); }
+
+.coll-card-battlenet {
+  border-color: rgba(110,180,255,0.4);
+  background: linear-gradient(135deg, rgba(0,60,140,0.35) 0%, var(--surface2) 100%);
+}
+.coll-card-battlenet .coll-name { color: #8cd0ff; }
+.coll-card-battlenet:hover { border-color: rgba(140,200,255,0.65); }
 
 .coll-card-all {
   border-color: rgba(76,155,232,0.35);
@@ -928,6 +939,10 @@ button:active { opacity: 0.8; }
   background: rgba(22,22,22,0.9); color: #d0d0d0;
   border: 1px solid rgba(180,180,180,0.3);
 }
+.platform-badge--battlenet {
+  background: rgba(0,80,160,0.85); color: #8cd0ff;
+  border: 1px solid rgba(110,180,255,0.4);
+}
 
 /* ── Epic source picker (in Settings screen) ──────────────────────────── */
 .epic-source-row {
@@ -977,6 +992,37 @@ button:active { opacity: 0.8; }
 }
 .settings-caveat strong { color: var(--text); }
 .settings-caveat em { color: var(--accent-hi); font-style: normal; }
+
+/* ── Launcher visibility toggles ──────────────────────────────────────── */
+.launcher-vis-label {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-bottom: 12px;
+  line-height: 1.45;
+}
+.launcher-vis-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.launcher-vis-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font-size: 0.9rem;
+}
+.launcher-vis-item input { accent-color: var(--accent); cursor: pointer; }
+.launcher-vis-name { flex: 1; color: var(--text); font-weight: 600; }
+.launcher-vis-status {
+  font-size: 0.76rem;
+  color: var(--muted);
+  font-style: italic;
+}
+.launcher-vis-status.not-installed { color: rgba(208, 74, 74, 0.85); }
 
 /* ── Edition preference (same-game-multiple-editions filter) ──────────── */
 .edition-pref-label {

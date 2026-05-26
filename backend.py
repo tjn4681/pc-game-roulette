@@ -48,6 +48,60 @@ GOG_GALAXY_DB = os.path.join(
 )
 
 
+# ── Platform registry ─────────────────────────────────────────────────────
+#
+# Single source of truth for which launchers we support and the metadata each
+# one needs across the rest of the codebase.  Adding a new launcher should
+# only require: adding an entry here, adding its detector + games getter, and
+# (in the frontend) adding the tab markup + a brand color in CSS.
+#
+# Note: only describes *metadata*.  Detection and fetching live in dedicated
+# methods on SteamRouletteAPI because each launcher has unique quirks.
+
+PLATFORMS = {
+    "steam":     {"id": "steam",     "name": "Steam",
+                  "galaxy_prefix": "steam",
+                  "default_priority": 0},
+    "gog":       {"id": "gog",       "name": "GOG",
+                  "galaxy_prefix": "gog",
+                  "default_priority": 1},
+    "epic":      {"id": "epic",      "name": "Epic Games",
+                  "galaxy_prefix": "epic",
+                  "default_priority": 2},
+    "battlenet": {"id": "battlenet", "name": "Battle.net",
+                  "galaxy_prefix": "battlenet",
+                  "default_priority": 3},
+}
+
+# Battle.net's URL protocol uses short marketing codes (battlenet://WoW) while
+# Galaxy stores its internal codenames (battlenet_wow).  Mapping covers every
+# Battle.net product as of late 2025 — add new ones here when Blizzard adds
+# them.  An unknown Galaxy code falls back to itself uppercased, which works
+# for a surprising number of products.
+BATTLENET_LAUNCH_CODES = {
+    "wow":         "WoW",
+    "wow_classic": "WoWC",
+    "d2":          "D2",
+    "d2LOD":       "D2",      # original Diablo II + LOD share the URL code
+    "osi":         "OSI",     # Diablo II: Resurrected
+    "diablo3":     "D3",
+    "fenrispup":   "Fen",     # Diablo IV
+    "fenris":      "Fen",
+    "prometheus":  "Pro",     # Overwatch / Overwatch 2 share URL code
+    "s1":          "S1",      # StarCraft Remastered
+    "s2":          "S2",      # StarCraft II
+    "w3":          "W3",      # Warcraft III: Reforged
+    "w3tft":       "War3",    # Warcraft III: TFT (classic)
+    "heroes":      "Hero",    # Heroes of the Storm
+    "hs_beta":     "WTCG",    # Hearthstone
+    "odin":        "ODIN",    # CoD: Modern Warfare
+    "zeus":        "ZEUS",    # CoD: Black Ops Cold War
+    "fore":        "FORE",    # CoD: Vanguard
+    "lazr":        "LAZR",
+    "viper":       "VIPER",
+}
+
+
 def find_epic_manifests_dir():
     """Locate Epic Games Launcher's Manifests folder.
 
@@ -1837,23 +1891,40 @@ class SteamRouletteAPI:
 
     def get_dedup_settings(self):
         """Return the user's cross-platform duplicate hide settings."""
+        # Default priority follows the registry order — Steam first, then GOG,
+        # Epic, Battle.net.  Users can reorder in Settings.
+        default_priority = sorted(
+            PLATFORMS.keys(),
+            key=lambda p: PLATFORMS[p]["default_priority"],
+        )
+        stored = get_setting("platform_priority", None)
+        if not isinstance(stored, list):
+            stored = default_priority
+        else:
+            # Top up with any newly-supported launchers the user's saved
+            # priority predates (e.g. they had a priority saved before we
+            # added Battle.net) — append missing ones at the end.
+            for p in default_priority:
+                if p not in stored:
+                    stored.append(p)
         return {
             "status":   "ok",
             "enabled":  bool(get_setting("hide_duplicates", False)),
-            "priority": get_setting("platform_priority",
-                                    ["steam", "gog", "epic"]),
+            "priority": [p for p in stored if p in PLATFORMS],
         }
 
     def set_dedup_settings(self, enabled, priority):
         """Persist the dedup toggle and priority order."""
         if not isinstance(priority, list):
             return {"status": "error", "message": "priority must be a list"}
-        # Sanitise: keep only known platforms, dedupe, ensure all three present
+        # Sanitise: keep only known platforms, dedupe, and ensure every
+        # supported platform appears at least once.
         seen = []
         for p in priority:
-            if p in ("steam", "gog", "epic") and p not in seen:
+            if p in PLATFORMS and p not in seen:
                 seen.append(p)
-        for p in ("steam", "gog", "epic"):
+        for p in sorted(PLATFORMS.keys(),
+                        key=lambda x: PLATFORMS[x]["default_priority"]):
             if p not in seen:
                 seen.append(p)
         set_setting("hide_duplicates", bool(enabled))
@@ -1898,9 +1969,10 @@ class SteamRouletteAPI:
 
         Disabled (preference='both') returns all empty lists."""
         pref = get_setting("edition_preference", "both")
-        empty = {"status": "ok", "steam": [], "gog": [], "epic": [],
-                 "preference": pref,
-                 "counts": {"steam_hidden": 0, "gog_hidden": 0, "epic_hidden": 0}}
+        empty = {"status": "ok", "preference": pref}
+        for pid in PLATFORMS:
+            empty[pid] = []
+        empty["counts"] = {f"{pid}_hidden": 0 for pid in PLATFORMS}
         if pref not in ("enhanced", "original"):
             return empty
 
@@ -1919,44 +1991,203 @@ class SteamRouletteAPI:
             if _name_for(a)
         ]
 
-        gog_games  = self.get_gog_games().get("games", [])
-        epic_games = self.get_epic_games().get("games", [])
-
-        steam_hidden = find_same_platform_edition_dupes(steam_games, pref)
-        gog_hidden   = find_same_platform_edition_dupes(gog_games,   pref)
-        epic_hidden  = find_same_platform_edition_dupes(epic_games,  pref)
-
-        return {
-            "status": "ok",
-            "preference": pref,
-            "steam": list(steam_hidden),
-            "gog":   list(gog_hidden),
-            "epic":  list(epic_hidden),
-            "counts": {
-                "steam_hidden": len(steam_hidden),
-                "gog_hidden":   len(gog_hidden),
-                "epic_hidden":  len(epic_hidden),
-            },
+        per_platform_games = {
+            "steam":     steam_games,
+            "gog":       self.get_gog_games().get("games",       []),
+            "epic":      self.get_epic_games().get("games",      []),
+            "battlenet": self.get_battlenet_games().get("games", []),
         }
 
+        out = {"status": "ok", "preference": pref}
+        counts = {}
+        for pid, games in per_platform_games.items():
+            hidden = find_same_platform_edition_dupes(games, pref)
+            out[pid] = list(hidden)
+            counts[f"{pid}_hidden"] = len(hidden)
+        out["counts"] = counts
+        return out
+
     def detect_platforms(self):
-        """Report which of the three supported launchers we found on this PC.
+        """Report which of the supported launchers we found on this PC.
 
         Used by the frontend to (a) decide which tab to auto-select on a fresh
         install and (b) show a friendly empty state when the user has none of
         them installed.  Cheap to call — only stats file paths and registry."""
-        steam_path  = self._steam_path or find_steam_path()
-        galaxy_ok   = os.path.isfile(GOG_GALAXY_DB)
-        epic_dir    = find_epic_manifests_dir()
-        epic_oauth  = epic_auth.load_tokens(CACHE_DIR) is not None
+        steam_path    = self._steam_path or find_steam_path()
+        galaxy_ok     = os.path.isfile(GOG_GALAXY_DB)
+        epic_dir      = find_epic_manifests_dir()
+        epic_oauth    = epic_auth.load_tokens(CACHE_DIR) is not None
+        bnet_native   = self._detect_battlenet_native()
+        bnet_galaxy   = galaxy_ok and self._battlenet_in_galaxy()
         return {
             "status": "ok",
             "steam":     bool(steam_path),
             "gog":       galaxy_ok,
             "epic":      bool(epic_dir) or epic_oauth,
-            "any":       bool(steam_path or galaxy_ok or epic_dir or epic_oauth),
+            "battlenet": bnet_native or bnet_galaxy,
+            "any":       bool(steam_path or galaxy_ok or epic_dir or epic_oauth
+                              or bnet_native),
             "epic_oauth_connected": epic_oauth,
         }
+
+    def _detect_battlenet_native(self):
+        """True if Battle.net itself is installed (we can see its registry +
+        ProgramData folder).  Doesn't tell us anything about owned games."""
+        bnet_pd = os.path.join(_PROGRAM_DATA, "Battle.net")
+        if not os.path.isdir(bnet_pd):
+            return False
+        try:
+            with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SOFTWARE\WOW6432Node\Blizzard Entertainment\Battle.net",
+            ):
+                return True
+        except OSError:
+            pass
+        # Fallback to ProgramData existence alone (rare: Battle.net stripped of
+        # registry but folder still present — happens after partial uninstall)
+        return True
+
+    def _battlenet_in_galaxy(self):
+        """Cheap check: does the Galaxy DB contain any battlenet_ release keys?
+        Returns False without doing a full query if the DB is missing."""
+        if not os.path.isfile(GOG_GALAXY_DB):
+            return False
+        try:
+            conn = sqlite3.connect(f"file:{GOG_GALAXY_DB}?mode=ro",
+                                   uri=True, timeout=2.0)
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT 1 FROM LibraryReleases WHERE releaseKey LIKE 'battlenet_%' LIMIT 1"
+            )
+            row = cur.fetchone()
+            conn.close()
+            return row is not None
+        except sqlite3.Error:
+            return False
+
+    # ── Per-launcher enable/disable ───────────────────────────────────────
+
+    def get_launcher_status(self):
+        """Return per-launcher {installed, enabled} plus the user's source pref
+        for the launchers that support multiple sources.  Single endpoint the
+        frontend can hit to populate the Launcher Visibility settings UI."""
+        detected = self.detect_platforms()
+        disabled = set(get_setting("disabled_launchers", []) or [])
+        launchers = []
+        for pid, meta in PLATFORMS.items():
+            launchers.append({
+                "id":        pid,
+                "name":      meta["name"],
+                "installed": bool(detected.get(pid, False)),
+                "enabled":   pid not in disabled,
+            })
+        return {"status": "ok", "launchers": launchers}
+
+    def set_launcher_enabled(self, launcher_id, enabled):
+        """Toggle visibility of a launcher's tab.  Disabling a launcher hides
+        its tab and excludes its games from Leave-It-To-Fate."""
+        if launcher_id not in PLATFORMS:
+            return {"status": "error", "message": f"Unknown launcher: {launcher_id}"}
+        disabled = set(get_setting("disabled_launchers", []) or [])
+        if enabled:
+            disabled.discard(launcher_id)
+        else:
+            disabled.add(launcher_id)
+        set_setting("disabled_launchers", sorted(disabled))
+        return self.get_launcher_status()
+
+    # ── Battle.net library ────────────────────────────────────────────────
+
+    def get_battlenet_source(self):
+        src = get_setting("battlenet_source", "galaxy")
+        if src not in ("galaxy", "native"):
+            src = "galaxy"
+        return {"status": "ok", "source": src}
+
+    def set_battlenet_source(self, source):
+        if source not in ("galaxy", "native"):
+            return {"status": "error", "message": "source must be 'galaxy' or 'native'"}
+        set_setting("battlenet_source", source)
+        return {"status": "ok", "source": source}
+
+    def get_battlenet_games(self):
+        """Return owned Battle.net games — Galaxy DB preferred, native fallback.
+
+        Galaxy gives us the full owned library + playtime / images if the user
+        has the Blizzard Galaxy integration installed.  Native is installed-
+        only via the registry + a hardcoded product catalogue (Battle.net
+        doesn't expose owned-but-not-installed data to local clients)."""
+        source = get_setting("battlenet_source", "galaxy")
+
+        # Galaxy first (or fallback when user picked native but Galaxy has data)
+        if source == "galaxy" or self._battlenet_in_galaxy():
+            galaxy = query_galaxy_db_for_platform("battlenet")
+            if galaxy:
+                apply_galaxy_enrichment(galaxy, platform="battlenet")
+                galaxy = self._filter_platform_excluded(galaxy)
+                return {"status": "ok", "games": galaxy, "source": "galaxy"}
+
+        # Native fallback: hardcoded catalogue, filter to installed
+        return self._get_battlenet_games_native()
+
+    def _get_battlenet_games_native(self):
+        """Detect installed Battle.net games via known install paths.  Since
+        Battle.net doesn't have a per-game registry like Steam/GOG, we use a
+        hardcoded catalogue of Blizzard products and check each one's
+        default install directory under Program Files."""
+        bases = [
+            r"C:\Program Files (x86)",
+            r"C:\Program Files",
+        ]
+        # name, install folder name, Battle.net URL code
+        catalogue = [
+            ("World of Warcraft",             "World of Warcraft",            "WoW"),
+            ("World of Warcraft Classic",     "World of Warcraft\\_classic_", "WoWC"),
+            ("Diablo IV",                     "Diablo IV",                    "Fen"),
+            ("Diablo III",                    "Diablo III",                   "D3"),
+            ("Diablo II: Resurrected",        "Diablo II Resurrected",        "OSI"),
+            ("Diablo II",                     "Diablo II",                    "D2"),
+            ("Overwatch 2",                   "Overwatch",                    "Pro"),
+            ("Hearthstone",                   "Hearthstone",                  "WTCG"),
+            ("StarCraft Remastered",          "StarCraft",                    "S1"),
+            ("StarCraft II",                  "StarCraft II",                 "S2"),
+            ("Warcraft III: Reforged",        "Warcraft III",                 "W3"),
+            ("Heroes of the Storm",           "Heroes of the Storm",          "Hero"),
+            ("Call of Duty: Modern Warfare",  "Call of Duty Modern Warfare",  "ODIN"),
+            ("Call of Duty: Black Ops Cold War", "Call of Duty Black Ops Cold War", "ZEUS"),
+            ("Call of Duty: Vanguard",        "Call of Duty Vanguard",        "FORE"),
+        ]
+        games = []
+        for name, folder, url_code in catalogue:
+            for base in bases:
+                if os.path.isdir(os.path.join(base, folder)):
+                    games.append({
+                        "id":       f"battlenet_{url_code.lower()}",
+                        "raw_id":   url_code.lower(),
+                        "name":     name,
+                        "platform": "battlenet",
+                        "source":   "native",
+                        "url_code": url_code,
+                    })
+                    break
+        games = self._filter_platform_excluded(games)
+        return {"status": "ok", "games": games, "source": "native"}
+
+    def launch_battlenet_game(self, raw_id, source=None):
+        """Launch a Battle.net game.  Galaxy-sourced games go through Galaxy
+        (which dispatches to Battle.net); native-sourced games use Blizzard's
+        own URL protocol with a code mapped from Galaxy's internal id."""
+        if source == "galaxy":
+            release_key = (raw_id if raw_id.startswith("battlenet_")
+                           else f"battlenet_{raw_id}")
+            return self._launch_uri(f"goggalaxy://openGameView/{release_key}")
+        # Native path: Battle.net URL protocol expects the marketing code
+        # (WoW, D3, Pro, …) — look it up from Galaxy's internal id when
+        # possible, else uppercase the id as a best-effort fallback.
+        code_key = raw_id.replace("battlenet_", "")
+        url_code = BATTLENET_LAUNCH_CODES.get(code_key, code_key.upper())
+        return self._launch_uri(f"battlenet://{url_code}")
 
     def get_sound_enabled(self):
         """Whether reel tick / landing sounds are enabled."""
@@ -1996,59 +2227,48 @@ class SteamRouletteAPI:
         Frontend caches this and applies the exclude-lists locally to its game
         lists.  Returns empty lists if dedup is disabled."""
         settings = self.get_dedup_settings()
+        empty = {pid: [] for pid in PLATFORMS}
+        empty_counts = {f"{pid}_hidden": 0 for pid in PLATFORMS}
         if not settings["enabled"]:
-            return {"status": "ok",
-                    "steam": [], "gog": [], "epic": [],
-                    "counts": {"steam_hidden": 0, "gog_hidden": 0, "epic_hidden": 0}}
+            return {"status": "ok", **empty, "counts": empty_counts}
 
         priority = settings["priority"]
 
-        # Build the cross-platform pool — names per game id.
-        # Steam: union of every appid across collections + shortcuts.
+        # Steam: synthesise game dicts from the cached + bulk name pool
         steam_appids = set()
         for ids in (self._collections or {}).values():
             steam_appids.update(ids)
-        # Non-Steam shortcuts (the _shortcuts dict is {appid: {...}}); ignore
-        # them for dedup — synthetic IDs and they don't cross platforms
-        # in any meaningful way.
-
-        # Name resolution: merge the lazy per-spin cache (authoritative when
-        # present) with the bulk SteamSpy cache (covers ~30k popular games).
-        # The bulk cache is fetched lazily on first use of dedup and refreshed
-        # weekly — see steam_names.get_steam_app_names().
         name_cache = load_name_cache()
         bulk_names = steam_names.get_steam_app_names(CACHE_DIR)
-
         def _name_for(appid):
             return (name_cache.get(str(appid))
                     or bulk_names.get(str(appid))
                     or "")
-
         steam_games = [
             {"id": f"steam_{a}", "raw_id": a, "platform": "steam",
              "name": _name_for(a)}
             for a in steam_appids
-            if _name_for(a)   # skip games whose name we still don't know
+            if _name_for(a)
         ]
 
-        gog_games  = self.get_gog_games().get("games", [])
-        epic_games = self.get_epic_games().get("games", [])
+        gog_games   = self.get_gog_games().get("games",       [])
+        epic_games  = self.get_epic_games().get("games",      [])
+        bnet_games  = self.get_battlenet_games().get("games", [])
 
-        excludes = find_cross_platform_duplicates(
-            {"steam": steam_games, "gog": gog_games, "epic": epic_games},
-            priority,
-        )
-        return {
-            "status": "ok",
-            "steam":  excludes.get("steam", []),
-            "gog":    excludes.get("gog",   []),
-            "epic":   excludes.get("epic",  []),
-            "counts": {
-                "steam_hidden": len(excludes.get("steam", [])),
-                "gog_hidden":   len(excludes.get("gog",   [])),
-                "epic_hidden":  len(excludes.get("epic",  [])),
-            },
-        }
+        excludes = find_cross_platform_duplicates({
+            "steam":     steam_games,
+            "gog":       gog_games,
+            "epic":      epic_games,
+            "battlenet": bnet_games,
+        }, priority)
+
+        out = {"status": "ok"}
+        counts = {}
+        for pid in PLATFORMS:
+            out[pid] = excludes.get(pid, [])
+            counts[f"{pid}_hidden"] = len(out[pid])
+        out["counts"] = counts
+        return out
 
     def open_external_url(self, url):
         """Open an http/https URL in the user's default browser.  Used by the

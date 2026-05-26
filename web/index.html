@@ -64,6 +64,13 @@
           </svg>
           <span class="platform-label">Epic</span>
         </button>
+        <button class="platform-tab platform-tab--battlenet" id="tab-battlenet">
+          <svg class="platform-icon" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M12 1.5L2.5 7v10L12 22.5 21.5 17V7L12 1.5zM12 4l7.5 4.3v7.4L12 20 4.5 15.7V8.3L12 4z"/>
+            <path d="M12 7.5c-2.5 0-4.5 2-4.5 4.5s2 4.5 4.5 4.5 4.5-2 4.5-4.5-2-4.5-4.5-4.5zm0 7c-1.4 0-2.5-1.1-2.5-2.5s1.1-2.5 2.5-2.5 2.5 1.1 2.5 2.5-1.1 2.5-2.5 2.5z"/>
+          </svg>
+          <span class="platform-label">Battle.net</span>
+        </button>
         <button class="platform-tab platform-tab--litf" id="tab-litf" title="Spin across every game on every platform">
           <svg class="platform-icon" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
             <rect x="2.5" y="2.5" width="19" height="19" rx="3.5" fill="none" stroke="currentColor" stroke-width="2"/>
@@ -197,6 +204,37 @@
           automatically blend the two: full owned library from Epic + playtime
           and tags from Galaxy.
         </div>
+      </section>
+      <section class="settings-section">
+        <h3>Battle.net Library Source</h3>
+        <div class="epic-source-row">
+          <label class="epic-source-option">
+            <input type="radio" name="battlenet-source" value="galaxy" id="bnet-src-galaxy">
+            <div>
+              <div class="epic-source-title">GOG Galaxy integration</div>
+              <div class="epic-source-sub">Full owned Battle.net library via Galaxy's Blizzard connector. Requires GOG Galaxy with the Battle.net integration plugin enabled.</div>
+            </div>
+          </label>
+          <label class="epic-source-option">
+            <input type="radio" name="battlenet-source" value="native" id="bnet-src-native">
+            <div>
+              <div class="epic-source-title">Battle.net launcher (native)</div>
+              <div class="epic-source-sub">Detect installed Blizzard games directly from your Battle.net install. Installed-only — Battle.net doesn't expose owned-but-uninstalled games locally.</div>
+            </div>
+          </label>
+        </div>
+        <div class="settings-caveat">
+          <strong>Note:</strong> Battle.net playtime, cover art, and Galaxy tags are
+          only available when GOG Galaxy is installed alongside this app —
+          Battle.net's own launcher doesn't expose playtime. Choosing
+          <em>Battle.net launcher (native)</em> still triggers Galaxy enrichment
+          if Galaxy is also installed (best-of-both).
+        </div>
+      </section>
+      <section class="settings-section">
+        <h3>Launcher Visibility</h3>
+        <div class="launcher-vis-label">Show or hide each launcher's tab. Hidden launchers are also excluded from Leave It To Fate.</div>
+        <div class="launcher-vis-list" id="launcher-vis-list"></div>
       </section>
       <section class="settings-section">
         <h3>Sound</h3>
