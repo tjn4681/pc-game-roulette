@@ -2082,21 +2082,138 @@ class SteamRouletteAPI:
 
     # ── Per-launcher enable/disable ───────────────────────────────────────
 
+    def get_launcher_connection_status(self):
+        """Lightweight per-launcher status text for the Settings UI.
+
+        Doesn't hammer Epic's API or do expensive work — uses cached data
+        where possible and just reports source+name+count when known.
+        Returns: { steam: {name, count}, gog: {name, count}, ... }
+        """
+        info = self.get_platform_user_info()  # uses internal cache
+
+        # Steam count = total appids across user's collections
+        steam_count = len({a for ids in (self._collections or {}).values()
+                           for a in ids})
+
+        # GOG count from Galaxy DB query (already cached at app level)
+        try:
+            gog_count = len(query_galaxy_db_for_platform("gog"))
+        except Exception:
+            gog_count = 0
+
+        # Epic OAuth: check connection state, use cached library if present
+        epic_oauth_connected = epic_auth.load_tokens(CACHE_DIR) is not None
+        epic_count = 0
+        if epic_oauth_connected:
+            try:
+                if os.path.isfile(EPIC_LIB_CACHE):
+                    with open(EPIC_LIB_CACHE, "r", encoding="utf-8") as f:
+                        epic_count = len(json.load(f).get("games") or [])
+            except Exception:
+                pass
+        if epic_count == 0:
+            try:
+                epic_count = len(query_galaxy_db_for_platform("epic"))
+            except Exception:
+                pass
+
+        def _galaxy_count(prefix):
+            try:
+                return len(query_galaxy_db_for_platform(prefix))
+            except Exception:
+                return 0
+
+        return {
+            "status": "ok",
+            "steam": {
+                "connected": bool(self._steam_path),
+                "name":      info.get("steam", {}).get("name"),
+                "count":     steam_count,
+                "source":    "library JSON",
+            },
+            "gog": {
+                "connected": os.path.isfile(GOG_GALAXY_DB),
+                "name":      info.get("gog", {}).get("name"),
+                "count":     gog_count,
+                "source":    "GOG Galaxy DB",
+            },
+            "epic": {
+                "connected": epic_oauth_connected or self._epic_in_galaxy_or_manifests(),
+                "name":      info.get("epic", {}).get("name"),
+                "count":     epic_count,
+                "source":    get_setting("epic_source", "galaxy"),
+                "oauth":     epic_oauth_connected,
+            },
+            "battlenet": {
+                "connected": bool(self.detect_platforms().get("battlenet")),
+                "count":     _galaxy_count("battlenet"),
+                "source":    get_setting("battlenet_source", "galaxy"),
+            },
+            "origin": {
+                "connected": bool(self.detect_platforms().get("origin")),
+                "count":     _galaxy_count("origin"),
+                "source":    get_setting("origin_source", "galaxy"),
+            },
+            "uplay": {
+                "connected": bool(self.detect_platforms().get("uplay")),
+                "count":     _galaxy_count("uplay"),
+                "source":    get_setting("uplay_source", "galaxy"),
+            },
+        }
+
+    def _epic_in_galaxy_or_manifests(self):
+        if find_epic_manifests_dir():
+            return True
+        return bool(query_galaxy_db_for_platform("epic"))
+
     def get_launcher_status(self):
-        """Return per-launcher {installed, enabled} plus the user's source pref
-        for the launchers that support multiple sources.  Single endpoint the
-        frontend can hit to populate the Launcher Visibility settings UI."""
+        """Return per-launcher {installed, enabled, merged_into_gog} for the
+        Launcher Visibility settings UI.  A merged launcher reports
+        enabled=False so the frontend hides its tab — its games are served
+        from the GOG tab instead."""
         detected = self.detect_platforms()
         disabled = set(get_setting("disabled_launchers", []) or [])
+        merged   = set(get_setting("merged_into_gog",   []) or [])
         launchers = []
         for pid, meta in PLATFORMS.items():
+            is_merged = pid in merged
             launchers.append({
-                "id":        pid,
-                "name":      meta["name"],
-                "installed": bool(detected.get(pid, False)),
-                "enabled":   pid not in disabled,
+                "id":             pid,
+                "name":           meta["name"],
+                "installed":      bool(detected.get(pid, False)),
+                "enabled":        (pid not in disabled) and not is_merged,
+                "merged_into_gog": is_merged,
             })
         return {"status": "ok", "launchers": launchers}
+
+    # ── Merge other launchers into the GOG tab ────────────────────────────
+    #
+    # Some users have small libraries on certain launchers (e.g. only a handful
+    # of Battle.net games) and would rather see those games rolled into the
+    # GOG tab than have a sparse dedicated tab.  This setting lists launcher
+    # IDs whose games should be served from the GOG tab; those launchers' own
+    # tabs are auto-hidden via get_launcher_status().
+
+    _MERGEABLE_INTO_GOG = ("epic", "battlenet", "origin", "uplay")
+
+    def get_merged_into_gog(self):
+        merged = get_setting("merged_into_gog", []) or []
+        # Sanity-filter to only platforms we actually support merging
+        merged = [m for m in merged if m in self._MERGEABLE_INTO_GOG]
+        return {"status": "ok", "merged": merged,
+                "available": list(self._MERGEABLE_INTO_GOG)}
+
+    def set_merged_into_gog(self, launcher_id, merged):
+        if launcher_id not in self._MERGEABLE_INTO_GOG:
+            return {"status": "error",
+                    "message": f"Cannot merge {launcher_id} into GOG"}
+        current = set(get_setting("merged_into_gog", []) or [])
+        if merged:
+            current.add(launcher_id)
+        else:
+            current.discard(launcher_id)
+        set_setting("merged_into_gog", sorted(current))
+        return self.get_merged_into_gog()
 
     def set_launcher_enabled(self, launcher_id, enabled):
         """Toggle visibility of a launcher's tab.  Disabling a launcher hides
@@ -2126,23 +2243,21 @@ class SteamRouletteAPI:
         return {"status": "ok", "source": source}
 
     def get_battlenet_games(self):
-        """Return owned Battle.net games — Galaxy DB preferred, native fallback.
-
-        Galaxy gives us the full owned library + playtime / images if the user
-        has the Blizzard Galaxy integration installed.  Native is installed-
-        only via the registry + a hardcoded product catalogue (Battle.net
-        doesn't expose owned-but-not-installed data to local clients)."""
+        """Return owned Battle.net games.  Respects the user's source setting
+        strictly — if they pick 'native', we use native ONLY (no auto-fallback
+        to Galaxy).  When 'galaxy' is chosen and Galaxy has no Battle.net
+        entries, we fall back to native rather than returning empty."""
         source = get_setting("battlenet_source", "galaxy")
 
-        # Galaxy first (or fallback when user picked native but Galaxy has data)
-        if source == "galaxy" or self._battlenet_in_galaxy():
-            galaxy = query_galaxy_db_for_platform("battlenet")
-            if galaxy:
-                apply_galaxy_enrichment(galaxy, platform="battlenet")
-                galaxy = self._filter_platform_excluded(galaxy)
-                return {"status": "ok", "games": galaxy, "source": "galaxy"}
+        if source == "native":
+            return self._get_battlenet_games_native()
 
-        # Native fallback: hardcoded catalogue, filter to installed
+        # source == 'galaxy' — try Galaxy first, fall back if empty
+        galaxy = query_galaxy_db_for_platform("battlenet")
+        if galaxy:
+            apply_galaxy_enrichment(galaxy, platform="battlenet")
+            galaxy = self._filter_platform_excluded(galaxy)
+            return {"status": "ok", "games": galaxy, "source": "galaxy"}
         return self._get_battlenet_games_native()
 
     def _get_battlenet_games_native(self):
@@ -2236,23 +2351,17 @@ class SteamRouletteAPI:
         return {"status": "ok", "source": source}
 
     def get_origin_games(self):
-        """Owned EA / Origin games — Galaxy preferred, native fallback.
-
-        Native detection uses two complementary signals:
-        (a) game subkeys under HKLM\\SOFTWARE\\WOW6432Node\\EA Games and
-            HKLM\\SOFTWARE\\WOW6432Node\\Electronic Arts (each game name is a
-            subkey), and
-        (b) folder names under %ProgramData%\\Origin\\LocalContent (legacy
-            Origin tracking — folders survive after the .mfst files move to
-            EA Desktop's hashed system).
-        """
+        """Owned EA / Origin games.  Source preference is strict — picking
+        'native' uses native only.  Picking 'galaxy' falls back to native
+        only when Galaxy has no entries (rather than returning empty)."""
         source = get_setting("origin_source", "galaxy")
-        if source == "galaxy" or self._origin_in_galaxy():
-            galaxy = query_galaxy_db_for_platform("origin")
-            if galaxy:
-                apply_galaxy_enrichment(galaxy, platform="origin")
-                galaxy = self._filter_platform_excluded(galaxy)
-                return {"status": "ok", "games": galaxy, "source": "galaxy"}
+        if source == "native":
+            return self._get_origin_games_native()
+        galaxy = query_galaxy_db_for_platform("origin")
+        if galaxy:
+            apply_galaxy_enrichment(galaxy, platform="origin")
+            galaxy = self._filter_platform_excluded(galaxy)
+            return {"status": "ok", "games": galaxy, "source": "galaxy"}
         return self._get_origin_games_native()
 
     def _get_origin_games_native(self):
@@ -2353,19 +2462,17 @@ class SteamRouletteAPI:
         return {"status": "ok", "source": source}
 
     def get_uplay_games(self):
-        """Owned Ubisoft Connect games — Galaxy preferred.
-
-        Native fallback returns an empty list with a status hint, because
-        modern Ubisoft Connect tracks installed games in a SQLite file that
-        rotates location across versions.  Galaxy's Ubisoft integration is
-        the practical native-free path."""
+        """Owned Ubisoft Connect games.  Source preference is strict — picking
+        'native' uses native only.  Picking 'galaxy' falls back to native only
+        when Galaxy has no entries."""
         source = get_setting("uplay_source", "galaxy")
-        if source == "galaxy" or self._uplay_in_galaxy():
-            galaxy = query_galaxy_db_for_platform("uplay")
-            if galaxy:
-                apply_galaxy_enrichment(galaxy, platform="uplay")
-                galaxy = self._filter_platform_excluded(galaxy)
-                return {"status": "ok", "games": galaxy, "source": "galaxy"}
+        if source == "native":
+            return self._get_uplay_games_native()
+        galaxy = query_galaxy_db_for_platform("uplay")
+        if galaxy:
+            apply_galaxy_enrichment(galaxy, platform="uplay")
+            galaxy = self._filter_platform_excluded(galaxy)
+            return {"status": "ok", "games": galaxy, "source": "galaxy"}
         return self._get_uplay_games_native()
 
     def _get_uplay_games_native(self):

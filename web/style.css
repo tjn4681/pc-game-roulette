@@ -1023,6 +1023,33 @@ button:active { opacity: 0.8; }
 .settings-caveat strong { color: var(--text); }
 .settings-caveat em { color: var(--accent-hi); font-style: normal; }
 
+/* ── Per-launcher account connection status ──────────────────────────── */
+.conn-status-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.conn-status-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font-size: 0.88rem;
+}
+.conn-status-dot {
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  background: #555;
+  flex-shrink: 0;
+}
+.conn-status-row.connected .conn-status-dot { background: var(--green-hi); box-shadow: 0 0 6px rgba(96,196,93,0.6); }
+.conn-status-name { font-weight: 700; color: var(--text); min-width: 90px; }
+.conn-status-detail { color: var(--muted); font-size: 0.82rem; }
+.conn-status-detail strong { color: var(--text); }
+
 /* ── Launcher visibility toggles ──────────────────────────────────────── */
 .launcher-vis-label {
   font-size: 0.85rem;

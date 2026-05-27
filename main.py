@@ -9,7 +9,8 @@ import webview
 from backend import SteamRouletteAPI
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-WEB_DIR = os.path.join(SCRIPT_DIR, "web")
+WEB_DIR    = os.path.join(SCRIPT_DIR, "web")
+ICON_PATH  = os.path.join(SCRIPT_DIR, "app.ico")
 
 
 def main():
@@ -26,7 +27,15 @@ def main():
     )
 
     api.set_window(window)
-    webview.start(debug=("--debug" in sys.argv))
+
+    # The window icon (used in the title bar and taskbar) is set via
+    # webview.start's icon kwarg.  Fall back gracefully if the file is missing
+    # so the app still launches on a fresh checkout that hasn't run
+    # tools/generate_icon.py yet.
+    start_kwargs = {"debug": ("--debug" in sys.argv)}
+    if os.path.isfile(ICON_PATH):
+        start_kwargs["icon"] = ICON_PATH
+    webview.start(**start_kwargs)
 
 
 if __name__ == "__main__":

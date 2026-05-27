@@ -72,16 +72,19 @@
           <span class="platform-label">Battle.net</span>
         </button>
         <button class="platform-tab platform-tab--origin" id="tab-origin">
-          <svg class="platform-icon" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/>
-            <path d="M12 4a8 8 0 100 16 8 8 0 000-16zm0 2.5c-1.3 0-2.5.4-3.5 1.1l5.5 9.5c2.4-1.3 4-3.9 4-6.9 0-2.1-.8-4-2.2-5.4-1-.8-2.3-1.3-3.8-1.3z" opacity="0.5"/>
+          <svg class="platform-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <circle cx="12" cy="12" r="11" fill="currentColor"/>
+            <text x="12" y="16" text-anchor="middle" font-family="Arial Black, Helvetica, sans-serif" font-weight="900" font-size="11" fill="#0e1117" letter-spacing="-0.5">EA</text>
           </svg>
           <span class="platform-label">EA App</span>
         </button>
         <button class="platform-tab platform-tab--uplay" id="tab-uplay">
-          <svg class="platform-icon" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/>
-            <path d="M12 4.5C7.86 4.5 4.5 7.86 4.5 12c0 2.1.86 4 2.25 5.36L9 14.6V7l3 1v9.5l3-1V8l-2 .66c1.7 1.1 2.8 3 2.8 5.2 0 2-.94 3.75-2.39 4.93l1.86 1.5C18.04 17.85 19.5 15.1 19.5 12c0-4.14-3.36-7.5-7.5-7.5z"/>
+          <svg class="platform-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <!-- Ubisoft swirl: outer ring + spiraling inner arcs that converge to a center -->
+            <circle cx="12" cy="12" r="10"/>
+            <path d="M3.5 10.5c2 6 6 8.5 8.5 8.5"/>
+            <path d="M7 7c2 5.5 5 7.5 8.5 7.5"/>
+            <path d="M11 4.5c.7 3 2.5 5.5 5.5 6"/>
           </svg>
           <span class="platform-label">Ubisoft</span>
         </button>
@@ -220,6 +223,10 @@
         </div>
       </section>
       <section class="settings-section">
+        <h3>Account Connections</h3>
+        <div class="conn-status-list" id="conn-status-list"></div>
+      </section>
+      <section class="settings-section">
         <h3>Battle.net Library Source</h3>
         <div class="epic-source-row">
           <label class="epic-source-option">
@@ -282,6 +289,15 @@
             </div>
           </label>
         </div>
+      </section>
+      <section class="settings-section">
+        <h3>Combine Tabs</h3>
+        <div class="launcher-vis-label">
+          Roll selected launchers' games into the <strong>GOG tab</strong>
+          (and hide their own tabs). Useful when a launcher has very few games
+          and isn't worth a dedicated spin pool of its own.
+        </div>
+        <div class="launcher-vis-list" id="merge-into-gog-list"></div>
       </section>
       <section class="settings-section">
         <h3>Launcher Visibility</h3>

@@ -856,13 +856,95 @@ async function openSettings() {
   await refreshDedupSettings();
   await refreshEditionPreference();
   await refreshSoundSettings();
+  await refreshMergedIntoGog();
   await refreshLauncherVisibility();
+  await refreshConnectionStatus();
   showScreen('screen-settings');
 }
 
 // ── Per-launcher visibility (Settings) ───────────────────────────────────
 
 let launcherStatusCache = null;
+
+// ── Per-launcher connection status (Settings) ─────────────────────────────
+
+async function refreshConnectionStatus() {
+  if (!api) return;
+  const r = await api.get_launcher_connection_status();
+  if (r.status !== 'ok') return;
+  const list = document.getElementById('conn-status-list');
+  if (!list) return;
+  list.innerHTML = '';
+  const ORDER = ['steam', 'gog', 'epic', 'battlenet', 'origin', 'uplay'];
+  const NAMES = { steam: 'Steam', gog: 'GOG', epic: 'Epic',
+                  battlenet: 'Battle.net', origin: 'EA App', uplay: 'Ubisoft' };
+  ORDER.forEach(id => {
+    const info = r[id];
+    if (!info) return;
+    const row = document.createElement('div');
+    row.className = 'conn-status-row' + (info.connected ? ' connected' : '');
+    // Build a status line: "TheFinalTommy · 352 games · GOG Galaxy DB"
+    const parts = [];
+    if (info.name) parts.push(`<strong>${esc(info.name)}</strong>`);
+    if (info.count) parts.push(`${info.count.toLocaleString()} games`);
+    if (info.source) {
+      const sourceLabel =
+        info.source === 'galaxy'     ? 'via GOG Galaxy' :
+        info.source === 'native'     ? 'native detection' :
+        info.source === 'oauth'      ? 'direct OAuth' :
+        info.source;
+      parts.push(sourceLabel);
+    }
+    if (!info.connected) parts.push('not detected');
+    row.innerHTML = `
+      <span class="conn-status-dot"></span>
+      <span class="conn-status-name">${esc(NAMES[id] || id)}</span>
+      <span class="conn-status-detail">${parts.join(' · ')}</span>
+    `;
+    list.appendChild(row);
+  });
+}
+
+// ── Merge launchers into GOG tab ───────────────────────────────────────────
+
+let mergedIntoGog = [];   // module-level cache of which launchers merge into GOG
+
+async function refreshMergedIntoGog() {
+  if (!api) return;
+  const r = await api.get_merged_into_gog();
+  if (r.status !== 'ok') return;
+  mergedIntoGog = r.merged || [];
+  renderMergeIntoGogList(r.merged || [], r.available || []);
+}
+
+function renderMergeIntoGogList(merged, available) {
+  const list = document.getElementById('merge-into-gog-list');
+  if (!list) return;
+  list.innerHTML = '';
+  const NAMES = { epic: 'Epic Games', battlenet: 'Battle.net',
+                  origin: 'EA App', uplay: 'Ubisoft Connect' };
+  available.forEach(id => {
+    const row = document.createElement('label');
+    row.className = 'launcher-vis-item';
+    const checked = merged.includes(id);
+    row.innerHTML = `
+      <input type="checkbox" data-launcher="${id}" ${checked ? 'checked' : ''}>
+      <span class="launcher-vis-name">${esc(NAMES[id] || id)}</span>
+      <span class="launcher-vis-status">${checked ? 'merged into GOG' : ''}</span>
+    `;
+    row.querySelector('input').addEventListener('change', async (e) => {
+      if (!api) return;
+      await api.set_merged_into_gog(id, e.target.checked);
+      mergedIntoGog = e.target.checked
+        ? [...mergedIntoGog, id]
+        : mergedIntoGog.filter(x => x !== id);
+      // Refresh launcher visibility so the merged tab hides immediately
+      await refreshLauncherVisibility();
+      await refreshMergedIntoGog();   // re-render labels
+    });
+    list.appendChild(row);
+  });
+}
 
 async function refreshLauncherVisibility() {
   if (!api) return;
@@ -961,7 +1043,20 @@ async function refreshEditionPreference() {
   document.querySelectorAll('input[name="edition-pref"]').forEach(el => {
     el.checked = (el.value === r.preference);
   });
-  await refreshEditionPreview();
+  // Lazy preview to keep Settings snappy — see the dedup equivalent.
+  renderEditionPreviewStub(r.preference);
+}
+
+function renderEditionPreviewStub(preference) {
+  const preview = document.getElementById('edition-pref-preview');
+  if (!preview) return;
+  if (preference === 'both') {
+    preview.innerHTML = 'Currently disabled — every edition you own shows up independently.';
+    return;
+  }
+  preview.innerHTML =
+    '<button class="btn-secondary btn-sm" id="edition-preview-btn">Show edition-variant count</button>';
+  document.getElementById('edition-preview-btn').addEventListener('click', refreshEditionPreview);
 }
 
 async function refreshEditionPreview() {
@@ -1007,7 +1102,24 @@ async function refreshDedupSettings() {
   block.classList.toggle('enabled', !!s.enabled);
 
   renderDedupPriorityList(s.priority);
-  await refreshDedupPreview();
+  // Note: refreshDedupPreview is NOT called here — it loads every platform's
+  // games which can take several seconds, blocking Settings rendering and
+  // making radio toggles hang behind it in pywebview's serial js_api queue.
+  // We show a stub here and let the user click "Show current count" to
+  // compute on demand.
+  renderDedupPreviewStub(s.enabled);
+}
+
+function renderDedupPreviewStub(enabled) {
+  const preview = document.getElementById('dedup-preview');
+  if (!preview) return;
+  if (!enabled) {
+    preview.innerHTML = 'Currently disabled — every game shows up on every platform tab where you own it.';
+    return;
+  }
+  preview.innerHTML =
+    '<button class="btn-secondary btn-sm" id="dedup-preview-btn">Show current duplicate count</button>';
+  document.getElementById('dedup-preview-btn').addEventListener('click', refreshDedupPreview);
 }
 
 function renderDedupPriorityList(priority) {
@@ -1966,14 +2078,46 @@ async function leaveItToFate() {
 
 async function loadGogGrid(grid, empty) {
   if (!api) { empty.classList.remove('hidden'); return; }
-  const [result, tagResult] = await Promise.all([
+  // Fetch GOG + any launchers the user has chosen to merge in
+  const fetchers = [
     api.get_gog_games(),
     api.get_galaxy_collections('gog'),
-  ]);
-  if (result.status === 'ok' && result.games.length > 0) {
-    gogGames = await filterDuplicates(result.games);
+  ];
+  const mergedIds = mergedIntoGog || [];
+  const mergedGetters = {
+    epic:      () => api.get_epic_games(),
+    battlenet: () => api.get_battlenet_games(),
+    origin:    () => api.get_origin_games(),
+    uplay:     () => api.get_uplay_games(),
+  };
+  mergedIds.forEach(id => { if (mergedGetters[id]) fetchers.push(mergedGetters[id]()); });
+
+  const allResults = await Promise.all(fetchers);
+  const result    = allResults[0];
+  const tagResult = allResults[1];
+  const mergedResults = allResults.slice(2);
+
+  // Combine GOG + merged games into one pool
+  let combined = [];
+  if (result.status === 'ok') combined = combined.concat(result.games || []);
+  mergedResults.forEach(r => {
+    if (r && r.status === 'ok' && r.games) combined = combined.concat(r.games);
+  });
+
+  if (combined.length > 0) {
+    gogGames = await filterDuplicates(combined);
     grid.appendChild(makePlatformCard('gog', gogGames));
     appendTagCollections(grid, 'gog', tagResult, gogGames);
+    if (mergedIds.length > 0) {
+      const note = document.createElement('div');
+      note.className = 'platform-hint';
+      const merged_names = mergedIds.map(id =>
+        ({epic:'Epic', battlenet:'Battle.net', origin:'EA App', uplay:'Ubisoft'}[id] || id)
+      );
+      note.innerHTML = `Including <strong>${merged_names.join(', ')}</strong> ` +
+        `(merged here via Settings → Combine Tabs).`;
+      grid.appendChild(note);
+    }
     empty.classList.add('hidden');
   } else {
     gogGames = [];
@@ -2564,6 +2708,7 @@ async function init() {
     handleLoadResult(result);
     loadUserInfo();
     refreshSoundSettings();          // pull persisted sound on/off
+    refreshMergedIntoGog();          // pull the merge-into-GOG list
     refreshLauncherVisibility();     // hide tabs for any disabled launchers
     return;
   }
