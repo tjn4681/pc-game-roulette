@@ -1886,14 +1886,31 @@ async function loadGogGrid(grid, empty) {
 
   if (result.status === 'ok' && result.games.length > 0) {
     gogGames = await filterDuplicates(result.games);
+
+    // Split out the integrated-launcher games so we can show per-platform cards
+    const gogNative     = gogGames.filter(g => g.platform === 'gog');
+    const bnetGames     = gogGames.filter(g => g.platform === 'battlenet');
+    const originGames   = gogGames.filter(g => g.platform === 'origin');
+    const uplayGames    = gogGames.filter(g => g.platform === 'uplay');
+    const hasIntegrated = bnetGames.length > 0 || originGames.length > 0 || uplayGames.length > 0;
+
+    // Main card: all GOG-tab games combined
     grid.appendChild(makePlatformCard('gog', gogGames));
+
+    // Sub-cards for each integrated launcher that has games
+    if (bnetGames.length)   grid.appendChild(makePlatformCard('battlenet', bnetGames));
+    if (originGames.length) grid.appendChild(makePlatformCard('origin',    originGames));
+    if (uplayGames.length)  grid.appendChild(makePlatformCard('uplay',     uplayGames));
+
     appendTagCollections(grid, 'gog', tagResult, gogGames);
-    if (result.has_integrated) {
+
+    if (hasIntegrated) {
       const note = document.createElement('div');
       note.className = 'platform-hint';
       note.innerHTML =
-        `Also includes games from <strong>Battle.net, EA App, and/or Ubisoft Connect</strong> ` +
-        `that are integrated in GOG Galaxy.`;
+        `Battle.net, EA App, and Ubisoft Connect games shown above are pulled from ` +
+        `your <strong>GOG Galaxy</strong> integrations and are included in the ` +
+        `<em>GOG Library</em> combined pool.`;
       grid.appendChild(note);
     }
     empty.classList.add('hidden');
@@ -1998,8 +2015,12 @@ function makeTagCard(platform, tagName, games) {
 
 function makePlatformCard(platform, games, subtitle = null) {
   const card = document.createElement('div');
-  const NAMES   = { gog: 'GOG Library', epic: 'Epic Library', all: 'All Libraries' };
-  const CLASSES = { gog: 'coll-card-gog', epic: 'coll-card-epic', all: 'coll-card-all' };
+  const NAMES   = { gog: 'GOG Library', epic: 'Epic Library', all: 'All Libraries',
+                    battlenet: 'Battle.net Library', origin: 'EA App Library',
+                    uplay: 'Ubisoft Library' };
+  const CLASSES = { gog: 'coll-card-gog', epic: 'coll-card-epic', all: 'coll-card-all',
+                    battlenet: 'coll-card-battlenet', origin: 'coll-card-origin',
+                    uplay: 'coll-card-uplay' };
   card.className = `coll-card ${CLASSES[platform] || ''}`;
 
   const sub = subtitle !== null
@@ -2055,7 +2076,9 @@ function openPlatformSpin(platform, games) {
   spinMode             = 'platform';
   currentPlatformGames = games;
 
-  const NAMES = { gog: 'GOG Library', epic: 'Epic Library', all: 'All Libraries' };
+  const NAMES = { gog: 'GOG Library', epic: 'Epic Library', all: 'All Libraries',
+                  battlenet: 'Battle.net Library', origin: 'EA App Library',
+                  uplay: 'Ubisoft Library' };
   document.getElementById('spin-coll-name').textContent  = NAMES[platform] || platform;
   document.getElementById('spin-coll-count').textContent =
     `${games.length.toLocaleString()} game${games.length === 1 ? '' : 's'}`;

@@ -852,6 +852,27 @@ button:active { opacity: 0.8; }
 .coll-card-epic .coll-name { color: #e0e0e0; }
 .coll-card-epic:hover { border-color: rgba(220,220,220,0.5); }
 
+.coll-card-battlenet {
+  border-color: rgba(110,180,255,0.35);
+  background: linear-gradient(135deg, rgba(0,55,120,0.35) 0%, var(--surface2) 100%);
+}
+.coll-card-battlenet .coll-name { color: #8cd0ff; }
+.coll-card-battlenet:hover { border-color: rgba(140,200,255,0.6); }
+
+.coll-card-origin {
+  border-color: rgba(255,90,110,0.35);
+  background: linear-gradient(135deg, rgba(130,25,45,0.35) 0%, var(--surface2) 100%);
+}
+.coll-card-origin .coll-name { color: #ffb0b8; }
+.coll-card-origin:hover { border-color: rgba(255,130,150,0.55); }
+
+.coll-card-uplay {
+  border-color: rgba(110,180,255,0.35);
+  background: linear-gradient(135deg, rgba(0,65,150,0.3) 0%, var(--surface2) 100%);
+}
+.coll-card-uplay .coll-name { color: #9cd6ff; }
+.coll-card-uplay:hover { border-color: rgba(140,200,255,0.55); }
+
 .coll-card-all {
   border-color: rgba(76,155,232,0.35);
   background: linear-gradient(135deg, var(--surface) 0%, var(--surface2) 100%);
