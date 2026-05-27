@@ -64,30 +64,6 @@
           </svg>
           <span class="platform-label">Epic</span>
         </button>
-        <button class="platform-tab platform-tab--battlenet" id="tab-battlenet">
-          <svg class="platform-icon" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <path d="M12 1.5L2.5 7v10L12 22.5 21.5 17V7L12 1.5zM12 4l7.5 4.3v7.4L12 20 4.5 15.7V8.3L12 4z"/>
-            <path d="M12 7.5c-2.5 0-4.5 2-4.5 4.5s2 4.5 4.5 4.5 4.5-2 4.5-4.5-2-4.5-4.5-4.5zm0 7c-1.4 0-2.5-1.1-2.5-2.5s1.1-2.5 2.5-2.5 2.5 1.1 2.5 2.5-1.1 2.5-2.5 2.5z"/>
-          </svg>
-          <span class="platform-label">Battle.net</span>
-        </button>
-        <button class="platform-tab platform-tab--origin" id="tab-origin">
-          <svg class="platform-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <circle cx="12" cy="12" r="11" fill="currentColor"/>
-            <text x="12" y="16" text-anchor="middle" font-family="Arial Black, Helvetica, sans-serif" font-weight="900" font-size="11" fill="#0e1117" letter-spacing="-0.5">EA</text>
-          </svg>
-          <span class="platform-label">EA App</span>
-        </button>
-        <button class="platform-tab platform-tab--uplay" id="tab-uplay">
-          <svg class="platform-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <!-- Ubisoft swirl: outer ring + spiraling inner arcs that converge to a center -->
-            <circle cx="12" cy="12" r="10"/>
-            <path d="M3.5 10.5c2 6 6 8.5 8.5 8.5"/>
-            <path d="M7 7c2 5.5 5 7.5 8.5 7.5"/>
-            <path d="M11 4.5c.7 3 2.5 5.5 5.5 6"/>
-          </svg>
-          <span class="platform-label">Ubisoft</span>
-        </button>
         <button class="platform-tab platform-tab--litf" id="tab-litf" title="Spin across every game on every platform">
           <svg class="platform-icon" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
             <rect x="2.5" y="2.5" width="19" height="19" rx="3.5" fill="none" stroke="currentColor" stroke-width="2"/>
@@ -225,79 +201,6 @@
       <section class="settings-section">
         <h3>Account Connections</h3>
         <div class="conn-status-list" id="conn-status-list"></div>
-      </section>
-      <section class="settings-section">
-        <h3>Battle.net Library Source</h3>
-        <div class="epic-source-row">
-          <label class="epic-source-option">
-            <input type="radio" name="battlenet-source" value="galaxy" id="bnet-src-galaxy">
-            <div>
-              <div class="epic-source-title">GOG Galaxy integration</div>
-              <div class="epic-source-sub">Full owned Battle.net library via Galaxy's Blizzard connector. Requires GOG Galaxy with the Battle.net integration plugin enabled.</div>
-            </div>
-          </label>
-          <label class="epic-source-option">
-            <input type="radio" name="battlenet-source" value="native" id="bnet-src-native">
-            <div>
-              <div class="epic-source-title">Battle.net launcher (native)</div>
-              <div class="epic-source-sub">Detect installed Blizzard games directly from your Battle.net install. Installed-only — Battle.net doesn't expose owned-but-uninstalled games locally.</div>
-            </div>
-          </label>
-        </div>
-        <div class="settings-caveat">
-          <strong>Note:</strong> Battle.net playtime, cover art, and Galaxy tags are
-          only available when GOG Galaxy is installed alongside this app —
-          Battle.net's own launcher doesn't expose playtime. Choosing
-          <em>Battle.net launcher (native)</em> still triggers Galaxy enrichment
-          if Galaxy is also installed (best-of-both).
-        </div>
-      </section>
-      <section class="settings-section">
-        <h3>EA App Library Source</h3>
-        <div class="epic-source-row">
-          <label class="epic-source-option">
-            <input type="radio" name="origin-source" value="galaxy" id="origin-src-galaxy">
-            <div>
-              <div class="epic-source-title">GOG Galaxy integration</div>
-              <div class="epic-source-sub">Full owned EA library via Galaxy's Origin connector.</div>
-            </div>
-          </label>
-          <label class="epic-source-option">
-            <input type="radio" name="origin-source" value="native" id="origin-src-native">
-            <div>
-              <div class="epic-source-title">EA App (native)</div>
-              <div class="epic-source-sub">Installed games detected from local registry + Origin LocalContent folder. Launch opens EA App library (no direct-launch — EA App's URI scheme needs offer IDs we don't have natively).</div>
-            </div>
-          </label>
-        </div>
-      </section>
-      <section class="settings-section">
-        <h3>Ubisoft Connect Library Source</h3>
-        <div class="epic-source-row">
-          <label class="epic-source-option">
-            <input type="radio" name="uplay-source" value="galaxy" id="uplay-src-galaxy">
-            <div>
-              <div class="epic-source-title">GOG Galaxy integration</div>
-              <div class="epic-source-sub">Full owned Ubisoft library via Galaxy's Connect connector. Strongly recommended — Ubisoft Connect's native data is sparse.</div>
-            </div>
-          </label>
-          <label class="epic-source-option">
-            <input type="radio" name="uplay-source" value="native" id="uplay-src-native">
-            <div>
-              <div class="epic-source-title">Ubisoft Connect (native)</div>
-              <div class="epic-source-sub">Installed games detected from registry. Modern Ubisoft Connect no longer populates per-game names locally — only game IDs are shown.</div>
-            </div>
-          </label>
-        </div>
-      </section>
-      <section class="settings-section">
-        <h3>Combine Tabs</h3>
-        <div class="launcher-vis-label">
-          Roll selected launchers' games into the <strong>GOG tab</strong>
-          (and hide their own tabs). Useful when a launcher has very few games
-          and isn't worth a dedicated spin pool of its own.
-        </div>
-        <div class="launcher-vis-list" id="merge-into-gog-list"></div>
       </section>
       <section class="settings-section">
         <h3>Launcher Visibility</h3>

@@ -13,12 +13,9 @@ let prevGameWinner    = null;   // last winning appid (game mode) or game obj (p
 let prevCollWinner    = null;   // last winning collection
 let pendingStartFrom  = null;   // startFrom value queued by spinAgain for doSpin
 
-let currentPlatform      = 'steam'; // 'steam' | 'gog' | 'epic' | 'battlenet' | 'all'
+let currentPlatform      = 'steam'; // 'steam' | 'gog' | 'epic' | 'all'
 let gogGames             = [];      // [{id, raw_id, name, platform}] from get_gog_games()
 let epicGames            = [];      // [{id, raw_id, name, platform}] from get_epic_games()
-let battlenetGames       = [];      // [{id, raw_id, name, platform}] from get_battlenet_games()
-let originGames          = [];      // EA App / Origin games
-let uplayGames           = [];      // Ubisoft Connect games
 let currentPlatformGames = [];      // active pool when spinMode === 'platform'
 
 // Two separate filter sources that both produce per-platform ID exclude sets:
@@ -831,11 +828,10 @@ async function excludePlatformWinningGame(game) {
   // Drop the game from the current spin pool so spinAgain doesn't pick it
   currentPlatformGames = currentPlatformGames.filter(g => g.id !== game.id);
   // Also clean it out of the cached lists so re-entering the tab is consistent
-  if (game.platform === 'gog')        gogGames       = gogGames.filter(g => g.id !== game.id);
-  if (game.platform === 'epic')       epicGames      = epicGames.filter(g => g.id !== game.id);
-  if (game.platform === 'battlenet')  battlenetGames = battlenetGames.filter(g => g.id !== game.id);
-  if (game.platform === 'origin')     originGames    = originGames.filter(g => g.id !== game.id);
-  if (game.platform === 'uplay')      uplayGames     = uplayGames.filter(g => g.id !== game.id);
+  if (game.platform === 'gog' || game.platform === 'battlenet' ||
+      game.platform === 'origin' || game.platform === 'uplay')
+    gogGames  = gogGames.filter(g => g.id !== game.id);
+  if (game.platform === 'epic') epicGames = epicGames.filter(g => g.id !== game.id);
   prevGameWinner = null;
   showToast(`Excluded "${game.name}" from future spins`);
   spinAgain();
@@ -850,13 +846,9 @@ async function openSettings() {
   }
   renderSettings(r);
   await refreshEpicSettings();
-  await refreshBattlenetSource();
-  await refreshOriginSource();
-  await refreshUplaySource();
   await refreshDedupSettings();
   await refreshEditionPreference();
   await refreshSoundSettings();
-  await refreshMergedIntoGog();
   await refreshLauncherVisibility();
   await refreshConnectionStatus();
   showScreen('screen-settings');
@@ -875,9 +867,8 @@ async function refreshConnectionStatus() {
   const list = document.getElementById('conn-status-list');
   if (!list) return;
   list.innerHTML = '';
-  const ORDER = ['steam', 'gog', 'epic', 'battlenet', 'origin', 'uplay'];
-  const NAMES = { steam: 'Steam', gog: 'GOG', epic: 'Epic',
-                  battlenet: 'Battle.net', origin: 'EA App', uplay: 'Ubisoft' };
+  const ORDER = ['steam', 'gog', 'epic'];
+  const NAMES = { steam: 'Steam', gog: 'GOG', epic: 'Epic' };
   ORDER.forEach(id => {
     const info = r[id];
     if (!info) return;
@@ -901,47 +892,6 @@ async function refreshConnectionStatus() {
       <span class="conn-status-name">${esc(NAMES[id] || id)}</span>
       <span class="conn-status-detail">${parts.join(' · ')}</span>
     `;
-    list.appendChild(row);
-  });
-}
-
-// ── Merge launchers into GOG tab ───────────────────────────────────────────
-
-let mergedIntoGog = [];   // module-level cache of which launchers merge into GOG
-
-async function refreshMergedIntoGog() {
-  if (!api) return;
-  const r = await api.get_merged_into_gog();
-  if (r.status !== 'ok') return;
-  mergedIntoGog = r.merged || [];
-  renderMergeIntoGogList(r.merged || [], r.available || []);
-}
-
-function renderMergeIntoGogList(merged, available) {
-  const list = document.getElementById('merge-into-gog-list');
-  if (!list) return;
-  list.innerHTML = '';
-  const NAMES = { epic: 'Epic Games', battlenet: 'Battle.net',
-                  origin: 'EA App', uplay: 'Ubisoft Connect' };
-  available.forEach(id => {
-    const row = document.createElement('label');
-    row.className = 'launcher-vis-item';
-    const checked = merged.includes(id);
-    row.innerHTML = `
-      <input type="checkbox" data-launcher="${id}" ${checked ? 'checked' : ''}>
-      <span class="launcher-vis-name">${esc(NAMES[id] || id)}</span>
-      <span class="launcher-vis-status">${checked ? 'merged into GOG' : ''}</span>
-    `;
-    row.querySelector('input').addEventListener('change', async (e) => {
-      if (!api) return;
-      await api.set_merged_into_gog(id, e.target.checked);
-      mergedIntoGog = e.target.checked
-        ? [...mergedIntoGog, id]
-        : mergedIntoGog.filter(x => x !== id);
-      // Refresh launcher visibility so the merged tab hides immediately
-      await refreshLauncherVisibility();
-      await refreshMergedIntoGog();   // re-render labels
-    });
     list.appendChild(row);
   });
 }
@@ -996,33 +946,6 @@ function applyLauncherVisibility(launchers) {
     const fallback = launchers.find(l => l.enabled);
     if (fallback) switchPlatform(fallback.id);
   }
-}
-
-async function refreshBattlenetSource() {
-  if (!api) return;
-  const r = await api.get_battlenet_source();
-  if (r.status !== 'ok') return;
-  document.querySelectorAll('input[name="battlenet-source"]').forEach(el => {
-    el.checked = (el.value === r.source);
-  });
-}
-
-async function refreshOriginSource() {
-  if (!api) return;
-  const r = await api.get_origin_source();
-  if (r.status !== 'ok') return;
-  document.querySelectorAll('input[name="origin-source"]').forEach(el => {
-    el.checked = (el.value === r.source);
-  });
-}
-
-async function refreshUplaySource() {
-  if (!api) return;
-  const r = await api.get_uplay_source();
-  if (r.status !== 'ok') return;
-  document.querySelectorAll('input[name="uplay-source"]').forEach(el => {
-    el.checked = (el.value === r.source);
-  });
 }
 
 async function refreshSoundSettings() {
@@ -1090,7 +1013,7 @@ async function refreshEditionPreview() {
 // ── Cross-platform duplicate settings ──────────────────────────────────────
 
 const _PLATFORM_LABELS = { steam: 'Steam', gog: 'GOG', epic: 'Epic',
-                            battlenet: 'Battle.net', origin: 'EA App', uplay: 'Ubisoft' };
+                            battlenet: 'Battle.net', origin: 'EA App', uplay: 'Ubisoft Connect' };
 
 async function refreshDedupSettings() {
   if (!api) return;
@@ -1636,11 +1559,8 @@ async function reloadCollections() {
     grid.innerHTML = '';
     await Promise.all([
       (async () => {
-        if (currentPlatform === 'gog')       await loadGogGrid(grid, empty);
-        if (currentPlatform === 'epic')      await loadEpicGrid(grid, empty);
-        if (currentPlatform === 'battlenet') await loadBattlenetGrid(grid, empty);
-        if (currentPlatform === 'origin')    await loadOriginGrid(grid, empty);
-        if (currentPlatform === 'uplay')     await loadUplayGrid(grid, empty);
+        if (currentPlatform === 'gog')  await loadGogGrid(grid, empty);
+        if (currentPlatform === 'epic') await loadEpicGrid(grid, empty);
         // 'all' is the LITF action button — re-running it means re-spinning
         if (currentPlatform === 'all')       await leaveItToFate();
       })(),
@@ -1875,109 +1795,8 @@ async function switchPlatform(platform) {
   empty.classList.add('hidden');
   showScreen('screen-main');
 
-  if (platform === 'gog')       await loadGogGrid(grid, empty);
-  if (platform === 'epic')      await loadEpicGrid(grid, empty);
-  if (platform === 'battlenet') await loadBattlenetGrid(grid, empty);
-  if (platform === 'origin')    await loadOriginGrid(grid, empty);
-  if (platform === 'uplay')     await loadUplayGrid(grid, empty);
-}
-
-async function loadOriginGrid(grid, empty) {
-  if (!api) { empty.classList.remove('hidden'); return; }
-  const [result, tagResult] = await Promise.all([
-    api.get_origin_games(),
-    api.get_galaxy_collections('origin'),
-  ]);
-  if (result.status === 'ok' && result.games.length > 0) {
-    originGames = await filterDuplicates(result.games);
-    grid.appendChild(makePlatformCard('origin', originGames));
-    appendTagCollections(grid, 'origin', tagResult, originGames);
-    empty.classList.add('hidden');
-    if (result.source === 'native') {
-      const note = document.createElement('div');
-      note.className = 'platform-hint';
-      note.innerHTML =
-        `Only showing <strong>installed</strong> EA / Origin games. ` +
-        `To see your full owned library, install the ` +
-        `<strong>EA / Origin integration</strong> in GOG Galaxy ` +
-        `(Settings → Integrations → search "Origin").`;
-      grid.appendChild(note);
-    }
-  } else {
-    originGames = [];
-    empty.innerHTML =
-      '<p>No EA / Origin games found.</p>' +
-      '<p class="hint">For your <strong>full owned EA library</strong>, install the ' +
-      'Origin integration in GOG Galaxy (Settings → Integrations → search "Origin"). ' +
-      'Without it, only games with a footprint in your local registry will appear.</p>';
-    empty.classList.remove('hidden');
-  }
-}
-
-async function loadUplayGrid(grid, empty) {
-  if (!api) { empty.classList.remove('hidden'); return; }
-  const [result, tagResult] = await Promise.all([
-    api.get_uplay_games(),
-    api.get_galaxy_collections('uplay'),
-  ]);
-  if (result.status === 'ok' && result.games.length > 0) {
-    uplayGames = await filterDuplicates(result.games);
-    grid.appendChild(makePlatformCard('uplay', uplayGames));
-    appendTagCollections(grid, 'uplay', tagResult, uplayGames);
-    empty.classList.add('hidden');
-    if (result.source === 'native') {
-      const note = document.createElement('div');
-      note.className = 'platform-hint';
-      note.innerHTML =
-        `Only showing <strong>installed</strong> Ubisoft games (and Ubisoft Connect ` +
-        `no longer populates per-game registry data, so names are partial). For your ` +
-        `full owned library plus proper names, install the <strong>Ubisoft Connect ` +
-        `integration</strong> in GOG Galaxy (Settings → Integrations → search "Ubisoft").`;
-      grid.appendChild(note);
-    }
-  } else {
-    uplayGames = [];
-    empty.innerHTML =
-      '<p>No Ubisoft Connect games found.</p>' +
-      '<p class="hint">For your <strong>full owned Ubisoft library</strong>, install the ' +
-      'Ubisoft Connect integration in GOG Galaxy (Settings → Integrations → search "Ubisoft").</p>';
-    empty.classList.remove('hidden');
-  }
-}
-
-async function loadBattlenetGrid(grid, empty) {
-  if (!api) { empty.classList.remove('hidden'); return; }
-  const [result, tagResult] = await Promise.all([
-    api.get_battlenet_games(),
-    api.get_galaxy_collections('battlenet'),
-  ]);
-  if (result.status === 'ok' && result.games.length > 0) {
-    battlenetGames = await filterDuplicates(result.games);
-    grid.appendChild(makePlatformCard('battlenet', battlenetGames));
-    appendTagCollections(grid, 'battlenet', tagResult, battlenetGames);
-    empty.classList.add('hidden');
-
-    // Native source = installed games only — surface that to the user so
-    // they understand why their library looks smaller than expected.
-    if (result.source === 'native') {
-      const note = document.createElement('div');
-      note.className = 'platform-hint';
-      note.innerHTML =
-        `Only showing <strong>installed</strong> Battle.net games. ` +
-        `To see your full owned library, install the ` +
-        `<strong>Battle.net integration</strong> in GOG Galaxy ` +
-        `(Settings → Integrations → search "Battle.net").`;
-      grid.appendChild(note);
-    }
-  } else {
-    battlenetGames = [];
-    empty.innerHTML =
-      '<p>No Battle.net games found.</p>' +
-      '<p class="hint">For your <strong>full owned Battle.net library</strong>, install the ' +
-      'Battle.net integration in GOG Galaxy (Settings → Integrations → search "Battle.net"). ' +
-      'Without it, only installed Blizzard games will appear.</p>';
-    empty.classList.remove('hidden');
-  }
+  if (platform === 'gog')  await loadGogGrid(grid, empty);
+  if (platform === 'epic') await loadEpicGrid(grid, empty);
 }
 
 // ── Leave It To Fate — combined-platform auto-spinning button ──────────────
@@ -1999,24 +1818,18 @@ async function leaveItToFate() {
   // launchers are excluded from Leave It To Fate entirely.
   const enabledIds = launcherStatusCache
     ? new Set(launcherStatusCache.filter(l => l.enabled).map(l => l.id))
-    : new Set(['steam', 'gog', 'epic', 'battlenet', 'origin', 'uplay']);
+    : new Set(['steam', 'gog', 'epic']);
   const empty = {status: 'ok', games: []};
   const fetchIf = (id, fn) => enabledIds.has(id) ? fn() : Promise.resolve(empty);
 
-  const [gogResult, epicResult, bnetResult, originResult, uplayResult] = api
+  const [gogResult, epicResult] = api
     ? await Promise.all([
-        fetchIf('gog',       () => api.get_gog_games()),
-        fetchIf('epic',      () => api.get_epic_games()),
-        fetchIf('battlenet', () => api.get_battlenet_games()),
-        fetchIf('origin',    () => api.get_origin_games()),
-        fetchIf('uplay',     () => api.get_uplay_games()),
+        fetchIf('gog',  () => api.get_gog_games()),
+        fetchIf('epic', () => api.get_epic_games()),
       ])
-    : [empty, empty, empty, empty, empty];
-  gogGames       = gogResult.status    === 'ok' ? gogResult.games    : [];
-  epicGames      = epicResult.status   === 'ok' ? epicResult.games   : [];
-  battlenetGames = bnetResult.status   === 'ok' ? bnetResult.games   : [];
-  originGames    = originResult.status === 'ok' ? originResult.games : [];
-  uplayGames     = uplayResult.status  === 'ok' ? uplayResult.games  : [];
+    : [empty, empty];
+  gogGames  = gogResult.status  === 'ok' ? gogResult.games  : [];
+  epicGames = epicResult.status === 'ok' ? epicResult.games : [];
 
   let steamIds = enabledIds.has('steam') ? [...new Set([
     ...allCollections.flatMap(c => c.appids),
@@ -2026,21 +1839,12 @@ async function leaveItToFate() {
   // Apply cross-platform dedup if enabled
   const filteredSteam  = await filterDuplicates(steamIds);
   const filteredGog    = await filterDuplicates(gogGames);
-  const filteredEpic   = await filterDuplicates(epicGames);
-  const filteredBnet   = await filterDuplicates(battlenetGames);
-  const filteredOrigin = await filterDuplicates(originGames);
-  const filteredUplay  = await filterDuplicates(uplayGames);
+  const filteredEpic = await filterDuplicates(epicGames);
   // Mutate module-level lists so the spin sources match what we just spawned
-  gogGames       = filteredGog;
-  epicGames      = filteredEpic;
-  battlenetGames = filteredBnet;
-  originGames    = filteredOrigin;
-  uplayGames     = filteredUplay;
+  gogGames  = filteredGog;
+  epicGames = filteredEpic;
 
-  const allGames = [
-    ...filteredSteam, ...filteredGog, ...filteredEpic,
-    ...filteredBnet,  ...filteredOrigin, ...filteredUplay,
-  ];
+  const allGames = [...filteredSteam, ...filteredGog, ...filteredEpic];
   if (allGames.length === 0) {
     showToast('No games found across any platform', 'error');
     return;
@@ -2056,10 +1860,7 @@ async function leaveItToFate() {
   const parts = [];
   if (steamIds.length)       parts.push(`${steamIds.length.toLocaleString()} Steam`);
   if (gogGames.length)       parts.push(`${gogGames.length.toLocaleString()} GOG`);
-  if (epicGames.length)      parts.push(`${epicGames.length.toLocaleString()} Epic`);
-  if (battlenetGames.length) parts.push(`${battlenetGames.length.toLocaleString()} Battle.net`);
-  if (originGames.length)    parts.push(`${originGames.length.toLocaleString()} EA`);
-  if (uplayGames.length)     parts.push(`${uplayGames.length.toLocaleString()} Ubisoft`);
+  if (epicGames.length) parts.push(`${epicGames.length.toLocaleString()} Epic`);
   document.getElementById('spin-coll-count').textContent = parts.join(' · ');
 
   document.getElementById('footer-spin').classList.remove('hidden');
@@ -2078,44 +1879,21 @@ async function leaveItToFate() {
 
 async function loadGogGrid(grid, empty) {
   if (!api) { empty.classList.remove('hidden'); return; }
-  // Fetch GOG + any launchers the user has chosen to merge in
-  const fetchers = [
+  const [result, tagResult] = await Promise.all([
     api.get_gog_games(),
     api.get_galaxy_collections('gog'),
-  ];
-  const mergedIds = mergedIntoGog || [];
-  const mergedGetters = {
-    epic:      () => api.get_epic_games(),
-    battlenet: () => api.get_battlenet_games(),
-    origin:    () => api.get_origin_games(),
-    uplay:     () => api.get_uplay_games(),
-  };
-  mergedIds.forEach(id => { if (mergedGetters[id]) fetchers.push(mergedGetters[id]()); });
+  ]);
 
-  const allResults = await Promise.all(fetchers);
-  const result    = allResults[0];
-  const tagResult = allResults[1];
-  const mergedResults = allResults.slice(2);
-
-  // Combine GOG + merged games into one pool
-  let combined = [];
-  if (result.status === 'ok') combined = combined.concat(result.games || []);
-  mergedResults.forEach(r => {
-    if (r && r.status === 'ok' && r.games) combined = combined.concat(r.games);
-  });
-
-  if (combined.length > 0) {
-    gogGames = await filterDuplicates(combined);
+  if (result.status === 'ok' && result.games.length > 0) {
+    gogGames = await filterDuplicates(result.games);
     grid.appendChild(makePlatformCard('gog', gogGames));
     appendTagCollections(grid, 'gog', tagResult, gogGames);
-    if (mergedIds.length > 0) {
+    if (result.has_integrated) {
       const note = document.createElement('div');
       note.className = 'platform-hint';
-      const merged_names = mergedIds.map(id =>
-        ({epic:'Epic', battlenet:'Battle.net', origin:'EA App', uplay:'Ubisoft'}[id] || id)
-      );
-      note.innerHTML = `Including <strong>${merged_names.join(', ')}</strong> ` +
-        `(merged here via Settings → Combine Tabs).`;
+      note.innerHTML =
+        `Also includes games from <strong>Battle.net, EA App, and/or Ubisoft Connect</strong> ` +
+        `that are integrated in GOG Galaxy.`;
       grid.appendChild(note);
     }
     empty.classList.add('hidden');
@@ -2189,9 +1967,7 @@ function appendTagCollections(grid, platform, tagResult, games) {
 
 function makeTagCard(platform, tagName, games) {
   const card = document.createElement('div');
-  const CLASS = { gog: 'coll-card-gog', epic: 'coll-card-epic',
-                  battlenet: 'coll-card-battlenet',
-                  origin: 'coll-card-origin', uplay: 'coll-card-uplay' }[platform] || '';
+  const CLASS = { gog: 'coll-card-gog', epic: 'coll-card-epic' }[platform] || '';
   card.className = `coll-card ${CLASS} coll-card-tag`;
   card.innerHTML = `
     <div class="coll-name">${esc(tagName)}</div>
@@ -2222,10 +1998,8 @@ function makeTagCard(platform, tagName, games) {
 
 function makePlatformCard(platform, games, subtitle = null) {
   const card = document.createElement('div');
-  const NAMES   = { gog: 'GOG Library', epic: 'Epic Library', battlenet: 'Battle.net Library',
-                    origin: 'EA App Library', uplay: 'Ubisoft Library', all: 'All Libraries' };
-  const CLASSES = { gog: 'coll-card-gog', epic: 'coll-card-epic', battlenet: 'coll-card-battlenet',
-                    origin: 'coll-card-origin', uplay: 'coll-card-uplay', all: 'coll-card-all' };
+  const NAMES   = { gog: 'GOG Library', epic: 'Epic Library', all: 'All Libraries' };
+  const CLASSES = { gog: 'coll-card-gog', epic: 'coll-card-epic', all: 'coll-card-all' };
   card.className = `coll-card ${CLASSES[platform] || ''}`;
 
   const sub = subtitle !== null
@@ -2281,8 +2055,7 @@ function openPlatformSpin(platform, games) {
   spinMode             = 'platform';
   currentPlatformGames = games;
 
-  const NAMES = { gog: 'GOG Library', epic: 'Epic Library', battlenet: 'Battle.net Library',
-                  origin: 'EA App Library', uplay: 'Ubisoft Library', all: 'All Libraries' };
+  const NAMES = { gog: 'GOG Library', epic: 'Epic Library', all: 'All Libraries' };
   document.getElementById('spin-coll-name').textContent  = NAMES[platform] || platform;
   document.getElementById('spin-coll-count').textContent =
     `${games.length.toLocaleString()} game${games.length === 1 ? '' : 's'}`;
@@ -2590,32 +2363,6 @@ async function init() {
     invalidateDedupCache();
   });
 
-  // Battle.net source picker
-  document.querySelectorAll('input[name="battlenet-source"]').forEach(el => {
-    el.addEventListener('change', async () => {
-      if (!api || !el.checked) return;
-      await api.set_battlenet_source(el.value);
-      // Invalidate excludes since the source change may add/remove games
-      invalidateAllExcludes();
-    });
-  });
-  // EA App source picker
-  document.querySelectorAll('input[name="origin-source"]').forEach(el => {
-    el.addEventListener('change', async () => {
-      if (!api || !el.checked) return;
-      await api.set_origin_source(el.value);
-      invalidateAllExcludes();
-    });
-  });
-  // Ubisoft Connect source picker
-  document.querySelectorAll('input[name="uplay-source"]').forEach(el => {
-    el.addEventListener('change', async () => {
-      if (!api || !el.checked) return;
-      await api.set_uplay_source(el.value);
-      invalidateAllExcludes();
-    });
-  });
-
   // Edition preference: any of the three radios
   document.querySelectorAll('input[name="edition-pref"]').forEach(el => {
     el.addEventListener('change', async () => {
@@ -2641,7 +2388,7 @@ async function init() {
     renderManageList(e.target.value);
   });
   // Platform tab switchers
-  ['steam', 'gog', 'epic', 'battlenet', 'origin', 'uplay'].forEach(p => {
+  ['steam', 'gog', 'epic'].forEach(p => {
     document.getElementById(`tab-${p}`).addEventListener('click', () => switchPlatform(p));
   });
   // Leave It To Fate — action button, not a tab destination
