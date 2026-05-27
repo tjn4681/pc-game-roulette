@@ -71,6 +71,12 @@ PLATFORMS = {
     "battlenet": {"id": "battlenet", "name": "Battle.net",
                   "galaxy_prefix": "battlenet",
                   "default_priority": 3},
+    "origin":    {"id": "origin",    "name": "EA App",
+                  "galaxy_prefix": "origin",
+                  "default_priority": 4},
+    "uplay":     {"id": "uplay",     "name": "Ubisoft Connect",
+                  "galaxy_prefix": "uplay",
+                  "default_priority": 5},
 }
 
 # Battle.net's URL protocol uses short marketing codes (battlenet://WoW) while
@@ -1996,6 +2002,8 @@ class SteamRouletteAPI:
             "gog":       self.get_gog_games().get("games",       []),
             "epic":      self.get_epic_games().get("games",      []),
             "battlenet": self.get_battlenet_games().get("games", []),
+            "origin":    self.get_origin_games().get("games",    []),
+            "uplay":     self.get_uplay_games().get("games",     []),
         }
 
         out = {"status": "ok", "preference": pref}
@@ -2013,20 +2021,26 @@ class SteamRouletteAPI:
         Used by the frontend to (a) decide which tab to auto-select on a fresh
         install and (b) show a friendly empty state when the user has none of
         them installed.  Cheap to call — only stats file paths and registry."""
-        steam_path    = self._steam_path or find_steam_path()
-        galaxy_ok     = os.path.isfile(GOG_GALAXY_DB)
-        epic_dir      = find_epic_manifests_dir()
-        epic_oauth    = epic_auth.load_tokens(CACHE_DIR) is not None
-        bnet_native   = self._detect_battlenet_native()
-        bnet_galaxy   = galaxy_ok and self._battlenet_in_galaxy()
+        steam_path     = self._steam_path or find_steam_path()
+        galaxy_ok      = os.path.isfile(GOG_GALAXY_DB)
+        epic_dir       = find_epic_manifests_dir()
+        epic_oauth     = epic_auth.load_tokens(CACHE_DIR) is not None
+        bnet_native    = self._detect_battlenet_native()
+        bnet_galaxy    = galaxy_ok and self._battlenet_in_galaxy()
+        origin_native  = self._detect_origin_native()
+        origin_galaxy  = galaxy_ok and self._origin_in_galaxy()
+        uplay_native   = self._detect_uplay_native()
+        uplay_galaxy   = galaxy_ok and self._uplay_in_galaxy()
         return {
             "status": "ok",
             "steam":     bool(steam_path),
             "gog":       galaxy_ok,
             "epic":      bool(epic_dir) or epic_oauth,
-            "battlenet": bnet_native or bnet_galaxy,
+            "battlenet": bnet_native   or bnet_galaxy,
+            "origin":    origin_native or origin_galaxy,
+            "uplay":     uplay_native  or uplay_galaxy,
             "any":       bool(steam_path or galaxy_ok or epic_dir or epic_oauth
-                              or bnet_native),
+                              or bnet_native or origin_native or uplay_native),
             "epic_oauth_connected": epic_oauth,
         }
 
@@ -2189,6 +2203,232 @@ class SteamRouletteAPI:
         url_code = BATTLENET_LAUNCH_CODES.get(code_key, code_key.upper())
         return self._launch_uri(f"battlenet://{url_code}")
 
+    # ── EA App (Origin) library ──────────────────────────────────────────
+
+    def _detect_origin_native(self):
+        """True if EA App or legacy Origin is installed.  Checks the EA
+        Desktop install dirs and the Electronic Arts registry tree."""
+        for p in (r"C:\Program Files\Electronic Arts\EA Desktop",
+                  r"C:\Program Files (x86)\Origin"):
+            if os.path.isdir(p):
+                return True
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                r"SOFTWARE\WOW6432Node\Electronic Arts\EA Desktop"):
+                return True
+        except OSError:
+            pass
+        return os.path.isdir(os.path.join(_PROGRAM_DATA, "EA Desktop"))
+
+    def _origin_in_galaxy(self):
+        return self._galaxy_has_any("origin")
+
+    def get_origin_source(self):
+        src = get_setting("origin_source", "galaxy")
+        if src not in ("galaxy", "native"):
+            src = "galaxy"
+        return {"status": "ok", "source": src}
+
+    def set_origin_source(self, source):
+        if source not in ("galaxy", "native"):
+            return {"status": "error", "message": "source must be 'galaxy' or 'native'"}
+        set_setting("origin_source", source)
+        return {"status": "ok", "source": source}
+
+    def get_origin_games(self):
+        """Owned EA / Origin games — Galaxy preferred, native fallback.
+
+        Native detection uses two complementary signals:
+        (a) game subkeys under HKLM\\SOFTWARE\\WOW6432Node\\EA Games and
+            HKLM\\SOFTWARE\\WOW6432Node\\Electronic Arts (each game name is a
+            subkey), and
+        (b) folder names under %ProgramData%\\Origin\\LocalContent (legacy
+            Origin tracking — folders survive after the .mfst files move to
+            EA Desktop's hashed system).
+        """
+        source = get_setting("origin_source", "galaxy")
+        if source == "galaxy" or self._origin_in_galaxy():
+            galaxy = query_galaxy_db_for_platform("origin")
+            if galaxy:
+                apply_galaxy_enrichment(galaxy, platform="origin")
+                galaxy = self._filter_platform_excluded(galaxy)
+                return {"status": "ok", "games": galaxy, "source": "galaxy"}
+        return self._get_origin_games_native()
+
+    def _get_origin_games_native(self):
+        # Subkeys that aren't actually games — exclude these.
+        non_games = {
+            "ea core", "ea desktop", "ea games", "eadm",
+            "electronic arts", "maxis", "origin",
+        }
+        seen = {}   # name_lower -> name (for dedup across reg trees + folders)
+
+        # (a) Registry subkeys
+        for reg_path in (r"SOFTWARE\WOW6432Node\EA Games",
+                         r"SOFTWARE\WOW6432Node\Electronic Arts",
+                         r"SOFTWARE\EA Games",
+                         r"SOFTWARE\Electronic Arts"):
+            try:
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, reg_path) as k:
+                    i = 0
+                    while True:
+                        try:
+                            name = winreg.EnumKey(k, i); i += 1
+                            if name.lower() in non_games:
+                                continue
+                            # Strip trademark/copyright junk for display
+                            clean = name.replace("(tm)", "").replace("(TM)", "")
+                            clean = clean.replace("(R)", "").strip()
+                            if clean.lower() not in seen:
+                                seen[clean.lower()] = clean
+                        except OSError:
+                            break
+            except OSError:
+                continue
+
+        # (b) Origin LocalContent folder names (works even when folders are
+        #     empty — folder presence is the install marker)
+        lc = os.path.join(_PROGRAM_DATA, "Origin", "LocalContent")
+        if os.path.isdir(lc):
+            try:
+                for sub in os.listdir(lc):
+                    if not os.path.isdir(os.path.join(lc, sub)):
+                        continue
+                    clean = sub.replace("(TM)", "").replace("(tm)", "").strip()
+                    if clean.lower() not in seen and clean.lower() not in non_games:
+                        seen[clean.lower()] = clean
+            except OSError:
+                pass
+
+        games = [
+            {"id": f"origin_{n.lower().replace(' ', '_')}",
+             "raw_id": n, "name": n, "platform": "origin", "source": "native"}
+            for n in sorted(seen.values(), key=str.lower)
+        ]
+        games = self._filter_platform_excluded(games)
+        return {"status": "ok", "games": games, "source": "native"}
+
+    def launch_origin_game(self, raw_id, source=None):
+        """Launch an EA / Origin game.  Galaxy source dispatches through
+        Galaxy; native source opens EA App to its library (we don't have
+        offer IDs from registry alone, so direct-launch isn't possible)."""
+        if source == "galaxy":
+            release_key = (raw_id if raw_id.startswith("origin_")
+                           else f"origin_{raw_id}")
+            return self._launch_uri(f"goggalaxy://openGameView/{release_key}")
+        # Native path: open EA App library — user clicks Play from there.
+        # The `origin://` URI starts the EA Desktop launcher; `library/open`
+        # navigates straight to the library view.
+        return self._launch_uri("origin://library/open")
+
+    # ── Ubisoft Connect library ──────────────────────────────────────────
+
+    def _detect_uplay_native(self):
+        """True if Ubisoft Connect (Uplay) is installed."""
+        for p in (r"C:\Program Files (x86)\Ubisoft\Ubisoft Game Launcher",
+                  r"C:\Program Files\Ubisoft\Ubisoft Game Launcher"):
+            if os.path.isdir(p):
+                return True
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                r"SOFTWARE\WOW6432Node\Ubisoft\Launcher"):
+                return True
+        except OSError:
+            pass
+        return False
+
+    def _uplay_in_galaxy(self):
+        return self._galaxy_has_any("uplay")
+
+    def get_uplay_source(self):
+        src = get_setting("uplay_source", "galaxy")
+        if src not in ("galaxy", "native"):
+            src = "galaxy"
+        return {"status": "ok", "source": src}
+
+    def set_uplay_source(self, source):
+        if source not in ("galaxy", "native"):
+            return {"status": "error", "message": "source must be 'galaxy' or 'native'"}
+        set_setting("uplay_source", source)
+        return {"status": "ok", "source": source}
+
+    def get_uplay_games(self):
+        """Owned Ubisoft Connect games — Galaxy preferred.
+
+        Native fallback returns an empty list with a status hint, because
+        modern Ubisoft Connect tracks installed games in a SQLite file that
+        rotates location across versions.  Galaxy's Ubisoft integration is
+        the practical native-free path."""
+        source = get_setting("uplay_source", "galaxy")
+        if source == "galaxy" or self._uplay_in_galaxy():
+            galaxy = query_galaxy_db_for_platform("uplay")
+            if galaxy:
+                apply_galaxy_enrichment(galaxy, platform="uplay")
+                galaxy = self._filter_platform_excluded(galaxy)
+                return {"status": "ok", "games": galaxy, "source": "galaxy"}
+        return self._get_uplay_games_native()
+
+    def _get_uplay_games_native(self):
+        # The Installs subkeys exist but Ubisoft Connect's modern versions
+        # don't populate per-game values here anymore.  We list the bare game
+        # IDs as a "we know SOMETHING is installed" signal even though we
+        # can't resolve names without Galaxy.
+        games = []
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                r"SOFTWARE\WOW6432Node\Ubisoft\Launcher\Installs") as k:
+                i = 0
+                while True:
+                    try:
+                        gid = winreg.EnumKey(k, i); i += 1
+                        games.append({
+                            "id":       f"uplay_{gid}",
+                            "raw_id":   gid,
+                            "name":     f"Ubisoft Game #{gid}",
+                            "platform": "uplay",
+                            "source":   "native",
+                        })
+                    except OSError:
+                        break
+        except OSError:
+            pass
+        games = self._filter_platform_excluded(games)
+        return {"status": "ok", "games": games, "source": "native"}
+
+    def launch_uplay_game(self, raw_id, source=None):
+        """Launch a Ubisoft Connect game.  Galaxy source dispatches via
+        Galaxy; native uses Ubisoft's own URI scheme with the game ID."""
+        if source == "galaxy":
+            release_key = (raw_id if raw_id.startswith("uplay_")
+                           else f"uplay_{raw_id}")
+            return self._launch_uri(f"goggalaxy://openGameView/{release_key}")
+        # Native path: Ubisoft's launcher URI takes the numeric gameId.
+        # Most Ubisoft game IDs are numeric; if we got a non-numeric, just
+        # open the launcher to its library view.
+        gid = raw_id.replace("uplay_", "")
+        if gid.isdigit():
+            return self._launch_uri(f"uplay://launch/{gid}/0")
+        return self._launch_uri("uplay://")
+
+    # ── Galaxy DB helper used by all 'X_in_galaxy' methods ───────────────
+
+    def _galaxy_has_any(self, platform_prefix):
+        if not os.path.isfile(GOG_GALAXY_DB):
+            return False
+        try:
+            conn = sqlite3.connect(f"file:{GOG_GALAXY_DB}?mode=ro",
+                                   uri=True, timeout=2.0)
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT 1 FROM LibraryReleases WHERE releaseKey LIKE ? LIMIT 1",
+                (f"{platform_prefix}_%",),
+            )
+            row = cur.fetchone()
+            conn.close()
+            return row is not None
+        except sqlite3.Error:
+            return False
+
     def get_sound_enabled(self):
         """Whether reel tick / landing sounds are enabled."""
         return {"status": "ok", "enabled": bool(get_setting("sound_enabled", True))}
@@ -2251,15 +2491,13 @@ class SteamRouletteAPI:
             if _name_for(a)
         ]
 
-        gog_games   = self.get_gog_games().get("games",       [])
-        epic_games  = self.get_epic_games().get("games",      [])
-        bnet_games  = self.get_battlenet_games().get("games", [])
-
         excludes = find_cross_platform_duplicates({
             "steam":     steam_games,
-            "gog":       gog_games,
-            "epic":      epic_games,
-            "battlenet": bnet_games,
+            "gog":       self.get_gog_games().get("games",       []),
+            "epic":      self.get_epic_games().get("games",      []),
+            "battlenet": self.get_battlenet_games().get("games", []),
+            "origin":    self.get_origin_games().get("games",    []),
+            "uplay":     self.get_uplay_games().get("games",     []),
         }, priority)
 
         out = {"status": "ok"}

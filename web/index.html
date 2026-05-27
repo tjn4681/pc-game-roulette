@@ -71,6 +71,20 @@
           </svg>
           <span class="platform-label">Battle.net</span>
         </button>
+        <button class="platform-tab platform-tab--origin" id="tab-origin">
+          <svg class="platform-icon" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/>
+            <path d="M12 4a8 8 0 100 16 8 8 0 000-16zm0 2.5c-1.3 0-2.5.4-3.5 1.1l5.5 9.5c2.4-1.3 4-3.9 4-6.9 0-2.1-.8-4-2.2-5.4-1-.8-2.3-1.3-3.8-1.3z" opacity="0.5"/>
+          </svg>
+          <span class="platform-label">EA App</span>
+        </button>
+        <button class="platform-tab platform-tab--uplay" id="tab-uplay">
+          <svg class="platform-icon" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/>
+            <path d="M12 4.5C7.86 4.5 4.5 7.86 4.5 12c0 2.1.86 4 2.25 5.36L9 14.6V7l3 1v9.5l3-1V8l-2 .66c1.7 1.1 2.8 3 2.8 5.2 0 2-.94 3.75-2.39 4.93l1.86 1.5C18.04 17.85 19.5 15.1 19.5 12c0-4.14-3.36-7.5-7.5-7.5z"/>
+          </svg>
+          <span class="platform-label">Ubisoft</span>
+        </button>
         <button class="platform-tab platform-tab--litf" id="tab-litf" title="Spin across every game on every platform">
           <svg class="platform-icon" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
             <rect x="2.5" y="2.5" width="19" height="19" rx="3.5" fill="none" stroke="currentColor" stroke-width="2"/>
@@ -229,6 +243,44 @@
           Battle.net's own launcher doesn't expose playtime. Choosing
           <em>Battle.net launcher (native)</em> still triggers Galaxy enrichment
           if Galaxy is also installed (best-of-both).
+        </div>
+      </section>
+      <section class="settings-section">
+        <h3>EA App Library Source</h3>
+        <div class="epic-source-row">
+          <label class="epic-source-option">
+            <input type="radio" name="origin-source" value="galaxy" id="origin-src-galaxy">
+            <div>
+              <div class="epic-source-title">GOG Galaxy integration</div>
+              <div class="epic-source-sub">Full owned EA library via Galaxy's Origin connector.</div>
+            </div>
+          </label>
+          <label class="epic-source-option">
+            <input type="radio" name="origin-source" value="native" id="origin-src-native">
+            <div>
+              <div class="epic-source-title">EA App (native)</div>
+              <div class="epic-source-sub">Installed games detected from local registry + Origin LocalContent folder. Launch opens EA App library (no direct-launch — EA App's URI scheme needs offer IDs we don't have natively).</div>
+            </div>
+          </label>
+        </div>
+      </section>
+      <section class="settings-section">
+        <h3>Ubisoft Connect Library Source</h3>
+        <div class="epic-source-row">
+          <label class="epic-source-option">
+            <input type="radio" name="uplay-source" value="galaxy" id="uplay-src-galaxy">
+            <div>
+              <div class="epic-source-title">GOG Galaxy integration</div>
+              <div class="epic-source-sub">Full owned Ubisoft library via Galaxy's Connect connector. Strongly recommended — Ubisoft Connect's native data is sparse.</div>
+            </div>
+          </label>
+          <label class="epic-source-option">
+            <input type="radio" name="uplay-source" value="native" id="uplay-src-native">
+            <div>
+              <div class="epic-source-title">Ubisoft Connect (native)</div>
+              <div class="epic-source-sub">Installed games detected from registry. Modern Ubisoft Connect no longer populates per-game names locally — only game IDs are shown.</div>
+            </div>
+          </label>
         </div>
       </section>
       <section class="settings-section">

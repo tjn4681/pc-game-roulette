@@ -820,6 +820,14 @@ button:active { opacity: 0.8; }
   background: rgba(0,80,160,0.75); color: #8cd0ff;
   box-shadow: 0 0 0 1px rgba(110,180,255,0.55);
 }
+.platform-tab--origin.active {
+  background: rgba(190,40,60,0.75); color: #ffb0b8;
+  box-shadow: 0 0 0 1px rgba(255,90,110,0.55);
+}
+.platform-tab--uplay.active {
+  background: rgba(0,90,180,0.7); color: #9cd6ff;
+  box-shadow: 0 0 0 1px rgba(110,180,255,0.5);
+}
 
 /* "Leave It To Fate" — distinct gradient pill that always looks like a CTA */
 .platform-tab--litf {
@@ -862,6 +870,20 @@ button:active { opacity: 0.8; }
 }
 .coll-card-battlenet .coll-name { color: #8cd0ff; }
 .coll-card-battlenet:hover { border-color: rgba(140,200,255,0.65); }
+
+.coll-card-origin {
+  border-color: rgba(255,90,110,0.4);
+  background: linear-gradient(135deg, rgba(140,30,50,0.35) 0%, var(--surface2) 100%);
+}
+.coll-card-origin .coll-name { color: #ffb0b8; }
+.coll-card-origin:hover { border-color: rgba(255,130,150,0.6); }
+
+.coll-card-uplay {
+  border-color: rgba(110,180,255,0.4);
+  background: linear-gradient(135deg, rgba(0,70,160,0.3) 0%, var(--surface2) 100%);
+}
+.coll-card-uplay .coll-name { color: #9cd6ff; }
+.coll-card-uplay:hover { border-color: rgba(140,200,255,0.6); }
 
 .coll-card-all {
   border-color: rgba(76,155,232,0.35);
@@ -941,6 +963,14 @@ button:active { opacity: 0.8; }
 }
 .platform-badge--battlenet {
   background: rgba(0,80,160,0.85); color: #8cd0ff;
+  border: 1px solid rgba(110,180,255,0.4);
+}
+.platform-badge--origin {
+  background: rgba(180,40,60,0.85); color: #ffb0b8;
+  border: 1px solid rgba(255,90,110,0.4);
+}
+.platform-badge--uplay {
+  background: rgba(0,90,180,0.8); color: #9cd6ff;
   border: 1px solid rgba(110,180,255,0.4);
 }
 
