@@ -1861,21 +1861,30 @@ class SteamRouletteAPI:
         if conn is None:
             return {"status": "ok", "collections": []}
 
+        # When fetching for the GOG tab, include all integrated-launcher prefixes
+        # so games tagged in GOG Galaxy (e.g. an EA game tagged "FPS") appear
+        # in the GOG tag categories alongside native GOG games.
+        if platform == "gog":
+            prefixes = ("gog",) + _GOG_INTEGRATED_PREFIXES
+        else:
+            prefixes = (platform,)
+
         tag_to_keys = {}
         try:
             cur = conn.cursor()
-            cur.execute(
-                "SELECT releaseKey, tag FROM UserReleaseTags "
-                "WHERE releaseKey LIKE ? AND tag IS NOT NULL",
-                (f"{platform}_%",),
-            )
-            for release_key, tag in cur.fetchall():
-                if not tag:
-                    continue
-                tag = tag.strip()
-                if not tag:
-                    continue
-                tag_to_keys.setdefault(tag, []).append(release_key)
+            for prefix in prefixes:
+                cur.execute(
+                    "SELECT releaseKey, tag FROM UserReleaseTags "
+                    "WHERE releaseKey LIKE ? AND tag IS NOT NULL",
+                    (f"{prefix}_%",),
+                )
+                for release_key, tag in cur.fetchall():
+                    if not tag:
+                        continue
+                    tag = tag.strip()
+                    if not tag:
+                        continue
+                    tag_to_keys.setdefault(tag, []).append(release_key)
         except sqlite3.Error:
             pass
         finally:
@@ -2172,19 +2181,18 @@ class SteamRouletteAPI:
         return {"status": "ok", "count": len(names)}
 
     def get_duplicate_filter(self):
-        """Load every owned game across Steam / GOG / Epic, compute which IDs
-        should be hidden based on the priority order, and return:
+        """Load every owned game across Steam / GOG / Epic (+ integrated
+        launchers via GOG Galaxy), compute which IDs should be hidden based on
+        the priority order, and return per-platform exclude-ID lists.
 
-            { steam: [excluded_ids], gog: [excluded_ids], epic: [excluded_ids],
-              counts: { steam_hidden: N, gog_hidden: N, epic_hidden: N } }
-
-        Frontend caches this and applies the exclude-lists locally to its game
-        lists.  Returns empty lists if dedup is disabled."""
+        Integrated launchers (battlenet, origin, uplay) are always lowest
+        priority — they lose to any launcher in the user's priority list.
+        Returns empty lists if dedup is disabled."""
         settings = self.get_dedup_settings()
-        empty = {pid: [] for pid in PLATFORMS}
-        empty_counts = {f"{pid}_hidden": 0 for pid in PLATFORMS}
+        all_platform_ids = list(PLATFORMS) + list(_GOG_INTEGRATED_PREFIXES)
+        empty = {pid: [] for pid in all_platform_ids}
         if not settings["enabled"]:
-            return {"status": "ok", **empty, "counts": empty_counts}
+            return {"status": "ok", **empty, "counts": {}}
 
         priority = settings["priority"]
 
@@ -2205,15 +2213,26 @@ class SteamRouletteAPI:
             if _name_for(a)
         ]
 
+        # Split GOG result by platform so integrated launchers are deduped
+        # independently (not lumped under the 'gog' bucket)
+        gog_all    = self.get_gog_games().get("games", [])
+        gog_native = [g for g in gog_all if g["platform"] == "gog"]
+        bnet_games = [g for g in gog_all if g["platform"] == "battlenet"]
+        orig_games = [g for g in gog_all if g["platform"] == "origin"]
+        uply_games = [g for g in gog_all if g["platform"] == "uplay"]
+
         excludes = find_cross_platform_duplicates({
-            "steam": steam_games,
-            "gog":   self.get_gog_games().get("games", []),
-            "epic":  self.get_epic_games().get("games", []),
+            "steam":     steam_games,
+            "gog":       gog_native,
+            "epic":      self.get_epic_games().get("games", []),
+            "battlenet": bnet_games,
+            "origin":    orig_games,
+            "uplay":     uply_games,
         }, priority)
 
         out = {"status": "ok"}
         counts = {}
-        for pid in PLATFORMS:
+        for pid in all_platform_ids:
             out[pid] = excludes.get(pid, [])
             counts[f"{pid}_hidden"] = len(out[pid])
         out["counts"] = counts

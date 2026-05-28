@@ -34,8 +34,14 @@ async function getDedupExcludes() {
   }
   const r = await api.get_duplicate_filter();
   dedupExcludes = (r && r.status === 'ok')
-    ? { steam: new Set(r.steam), gog: new Set(r.gog), epic: new Set(r.epic) }
-    : { steam: new Set(), gog: new Set(), epic: new Set() };
+    ? { steam:     new Set(r.steam),
+        gog:       new Set(r.gog),
+        epic:      new Set(r.epic),
+        battlenet: new Set(r.battlenet || []),
+        origin:    new Set(r.origin    || []),
+        uplay:     new Set(r.uplay     || []) }
+    : { steam: new Set(), gog: new Set(), epic: new Set(),
+        battlenet: new Set(), origin: new Set(), uplay: new Set() };
   return dedupExcludes;
 }
 
@@ -55,9 +61,12 @@ async function getEditionExcludes() {
 async function getAllExcludes() {
   const [d, e] = await Promise.all([getDedupExcludes(), getEditionExcludes()]);
   return {
-    steam: new Set([...d.steam, ...e.steam]),
-    gog:   new Set([...d.gog,   ...e.gog]),
-    epic:  new Set([...d.epic,  ...e.epic]),
+    steam:     new Set([...d.steam,     ...(e.steam     || [])]),
+    gog:       new Set([...d.gog,       ...(e.gog       || [])]),
+    epic:      new Set([...d.epic,      ...(e.epic      || [])]),
+    battlenet: new Set([...(d.battlenet || [])]),
+    origin:    new Set([...(d.origin    || [])]),
+    uplay:     new Set([...(d.uplay     || [])]),
   };
 }
 
@@ -1885,19 +1894,23 @@ async function loadGogGrid(grid, empty) {
   ]);
 
   if (result.status === 'ok' && result.games.length > 0) {
-    gogGames = await filterDuplicates(result.games);
+    // Show the pre-dedup total on the card so the user sees all their games;
+    // the actual spin pool uses the deduped list to avoid cross-platform doubles
+    const preDedup      = result.games;
+    gogGames            = await filterDuplicates(preDedup);
 
     // Split out the integrated-launcher games so we can show per-platform cards
-    const gogNative     = gogGames.filter(g => g.platform === 'gog');
-    const bnetGames     = gogGames.filter(g => g.platform === 'battlenet');
-    const originGames   = gogGames.filter(g => g.platform === 'origin');
-    const uplayGames    = gogGames.filter(g => g.platform === 'uplay');
+    const bnetGames   = gogGames.filter(g => g.platform === 'battlenet');
+    const originGames = gogGames.filter(g => g.platform === 'origin');
+    const uplayGames  = gogGames.filter(g => g.platform === 'uplay');
     const hasIntegrated = bnetGames.length > 0 || originGames.length > 0 || uplayGames.length > 0;
 
-    // Main card: all GOG-tab games combined
-    grid.appendChild(makePlatformCard('gog', gogGames));
+    // Main card: show pre-dedup count (so integrated games are always visible),
+    // but clicking spins only the deduped pool (no Steam/Epic doubles)
+    const totalLabel = `${preDedup.length.toLocaleString()} game${preDedup.length === 1 ? '' : 's'}`;
+    grid.appendChild(makePlatformCard('gog', gogGames, totalLabel));
 
-    // Sub-cards for each integrated launcher that has games
+    // Sub-cards for each integrated launcher that has games (post-dedup)
     if (bnetGames.length)   grid.appendChild(makePlatformCard('battlenet', bnetGames));
     if (originGames.length) grid.appendChild(makePlatformCard('origin',    originGames));
     if (uplayGames.length)  grid.appendChild(makePlatformCard('uplay',     uplayGames));
