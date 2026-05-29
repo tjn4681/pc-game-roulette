@@ -11,6 +11,9 @@ dist/
 cache/
 config.json
 
+# Generated icon preview (app.ico is the committed artifact)
+app_icon_preview.png
+
 # Claude Code local-only settings (permissions, etc.)
 .claude/
 

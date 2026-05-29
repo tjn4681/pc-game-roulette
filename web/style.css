@@ -1256,5 +1256,46 @@ button:active { opacity: 0.8; }
 }
 .platform-hint strong { color: var(--text); }
 
+/* ── Platform themes (override accent + surface palette per launcher tab) ── */
+/*
+ * Applied by applyPlatformTheme() in app.js when the user switches tabs.
+ * We override only the variables that drive brand-visible colours so that
+ * layout, typography, and contrast are never broken.
+ */
+
+/* GOG — deep purple accent, subtly purple-tinted surfaces */
+body.theme-gog {
+  --accent:    #a259ff;
+  --accent-hi: #c090ff;
+  --bg:        #0c0a14;
+  --surface:   #140f22;
+  --surface2:  #1a1533;
+  --border:    rgba(140, 80, 230, 0.28);
+}
+body.theme-gog .logo-small         { color: var(--accent); }
+body.theme-gog .logo               { text-shadow: 0 0 40px rgba(180, 100, 255, 0.4); }
+body.theme-gog .btn-primary        { background: var(--accent); }
+body.theme-gog .btn-primary:hover  { background: var(--accent-hi); }
+body.theme-gog .btn-spin           { background: var(--accent); }
+body.theme-gog .btn-spin:hover:not(:disabled) { background: var(--accent-hi); }
+body.theme-gog .winner-panel { border-color: rgba(162, 89, 255, 0.45); }
+
+/* Epic — near-black surfaces, light gray accent (Epic's minimalist brand) */
+body.theme-epic {
+  --accent:    #b8b8b8;
+  --accent-hi: #f0f0f0;
+  --bg:        #080808;
+  --surface:   #101010;
+  --surface2:  #1c1c1c;
+  --border:    rgba(210, 210, 210, 0.18);
+}
+body.theme-epic .logo-small        { color: #e8e8e8; }
+body.theme-epic .logo              { text-shadow: 0 0 40px rgba(240, 240, 240, 0.2); }
+body.theme-epic .btn-primary       { background: #2a2a2a; color: #f0f0f0; }
+body.theme-epic .btn-primary:hover { background: #3a3a3a; }
+body.theme-epic .btn-spin          { background: #222222; color: #f0f0f0; }
+body.theme-epic .btn-spin:hover:not(:disabled) { background: #333333; }
+body.theme-epic .winner-panel { border-color: rgba(220, 220, 220, 0.25); }
+
 /* ── Utility ──────────────────────────────────────────────────────────── */
 .hidden { display: none !important; }

@@ -18,6 +18,15 @@ let gogGames             = [];      // [{id, raw_id, name, platform}] from get_g
 let epicGames            = [];      // [{id, raw_id, name, platform}] from get_epic_games()
 let currentPlatformGames = [];      // active pool when spinMode === 'platform'
 
+// Tag collections for GOG / Epic: [{name, count, games: [gameObj, ...]}]
+// Populated by loadGogGrid / loadEpicGrid; used for Tag Roulette mode.
+let gogTagCollections   = [];
+let epicTagCollections  = [];
+// The collection list currently driving the Collection Roulette spin.
+// Points at allCollections for Steam, gogTagCollections/epicTagCollections otherwise.
+let activeTagCollections        = [];
+let collectionRoulettePlatform  = 'steam'; // 'steam' | 'gog' | 'epic'
+
 // Two separate filter sources that both produce per-platform ID exclude sets:
 //   * Cross-platform dedup (Batman on Steam + Epic → hide the non-preferred)
 //   * Edition preference  (Mass Effect + Mass Effect Legendary → hide one)
@@ -551,7 +560,7 @@ async function doSpin(forceNonSteam = false) {
   // lazily loads the real art via Python.
   let winner;
   if (spinMode === 'collection') {
-    winner = randItem(allCollections);
+    winner = randItem(activeTagCollections);
   } else if (spinMode === 'platform') {
     winner = randItem(currentPlatformGames);
   } else {
@@ -613,7 +622,7 @@ async function doSpin(forceNonSteam = false) {
   }
 
   if (spinMode === 'collection') {
-    buildCollectionReel(allCollections, startFrom, winner);
+    buildCollectionReel(activeTagCollections, startFrom, winner);
   } else if (spinMode === 'platform') {
     buildPlatformReel(currentPlatformGames, startFrom, winner);
   } else {
@@ -698,10 +707,16 @@ function showCollectionWinner(collection) {
   document.getElementById('winner-coll-sub').textContent =
     `${collection.count.toLocaleString()} game${collection.count === 1 ? '' : 's'}`;
 
-  // "Spin a Game" goes straight into game spin for this collection
+  // "Spin a Game" goes into game spin (Steam) or platform spin (GOG / Epic)
   const spinGameBtn = document.getElementById('btn-spin-game');
   spinGameBtn.classList.remove('hidden');
-  spinGameBtn.onclick = () => openSpin(collection);
+  if (collectionRoulettePlatform === 'steam') {
+    spinGameBtn.onclick = () => openSpin(collection);
+  } else {
+    spinGameBtn.onclick = () => openPlatformSpin(
+      collectionRoulettePlatform, collection.games || []
+    );
+  }
 
   document.getElementById('btn-spin-again').textContent = 'Pick Another';
 }
@@ -715,7 +730,7 @@ async function spinAgain() {
   currentWinnerAppid = null;
 
   // Pre-build so the reel shows the previous winner at position 0 briefly
-  if      (spinMode === 'collection') buildCollectionReel(allCollections, startFrom);
+  if      (spinMode === 'collection') buildCollectionReel(activeTagCollections, startFrom);
   else if (spinMode === 'platform')   buildPlatformReel(currentPlatformGames, startFrom);
   else                                buildGameReel(currentCollection.appids, startFrom);
 
@@ -749,12 +764,27 @@ function openSpin(collection) {
 }
 
 function openCollectionRoulette() {
-  if (allCollections.length === 0) return;
+  // Route to the right collection set based on the currently-visible platform tab
+  if (currentPlatform === 'gog') {
+    if (!gogTagCollections.length) return;
+    activeTagCollections       = gogTagCollections;
+    collectionRoulettePlatform = 'gog';
+  } else if (currentPlatform === 'epic') {
+    if (!epicTagCollections.length) return;
+    activeTagCollections       = epicTagCollections;
+    collectionRoulettePlatform = 'epic';
+  } else {
+    if (!allCollections.length) return;
+    activeTagCollections       = allCollections;
+    collectionRoulettePlatform = 'steam';
+  }
+
   spinMode = 'collection';
 
-  document.getElementById('spin-coll-name').textContent  = 'Collection Roulette';
+  const label = collectionRoulettePlatform === 'steam' ? 'Collection Roulette' : 'Tag Roulette';
+  document.getElementById('spin-coll-name').textContent  = label;
   document.getElementById('spin-coll-count').textContent =
-    `${allCollections.length} collection${allCollections.length === 1 ? '' : 's'}`;
+    `${activeTagCollections.length} ${collectionRoulettePlatform === 'steam' ? 'collection' : 'tag'}${activeTagCollections.length === 1 ? '' : 's'}`;
 
   document.getElementById('footer-spin').classList.remove('hidden');
   document.getElementById('footer-winner').classList.add('hidden');
@@ -762,7 +792,7 @@ function openCollectionRoulette() {
   document.getElementById('btn-spin').textContent = 'SPIN';
   currentWinnerAppid = null;
 
-  buildCollectionReel(allCollections);
+  buildCollectionReel(activeTagCollections);
   showScreen('screen-spin');
 }
 
@@ -1779,8 +1809,15 @@ async function debugCurrentCollection() {
 
 // ── Platform switching ─────────────────────────────────────────────────────
 
+function applyPlatformTheme(platform) {
+  document.body.classList.remove('theme-gog', 'theme-epic');
+  if (platform === 'gog')  document.body.classList.add('theme-gog');
+  if (platform === 'epic') document.body.classList.add('theme-epic');
+}
+
 async function switchPlatform(platform) {
   currentPlatform = platform;
+  applyPlatformTheme(platform);
 
   // Update tab highlights
   document.querySelectorAll('.platform-tab').forEach(t => t.classList.remove('active'));
@@ -1789,9 +1826,22 @@ async function switchPlatform(platform) {
   // Swap the user badge for the active platform
   renderUserBadgeFor(platform);
 
-  // Collection Roulette only applies to Steam
-  document.getElementById('btn-coll-roulette').style.display =
-    platform === 'steam' ? '' : 'none';
+  // Collection Roulette button: always show for Steam; for GOG/Epic show only
+  // if we already have tag collections loaded (loadGogGrid/loadEpicGrid will
+  // re-evaluate after loading completes if tags come back non-empty).
+  const collBtn = document.getElementById('btn-coll-roulette');
+  if (platform === 'steam') {
+    collBtn.textContent = 'Collection Roulette';
+    collBtn.style.display = '';
+  } else if (platform === 'gog') {
+    collBtn.textContent = 'Tag Roulette';
+    collBtn.style.display = gogTagCollections.length ? '' : 'none';
+  } else if (platform === 'epic') {
+    collBtn.textContent = 'Tag Roulette';
+    collBtn.style.display = epicTagCollections.length ? '' : 'none';
+  } else {
+    collBtn.style.display = 'none';
+  }
 
   if (platform === 'steam') {
     renderCollections(allCollections, allShortcutAppids, allHiddenCollections);
@@ -1915,6 +1965,17 @@ async function loadGogGrid(grid, empty) {
     if (originGames.length) grid.appendChild(makePlatformCard('origin',    originGames));
     if (uplayGames.length)  grid.appendChild(makePlatformCard('uplay',     uplayGames));
 
+    // Build and store resolved GOG tag collections for Tag Roulette.
+    // Resolve each tag's appid list to actual game objects.
+    const byKey = {};
+    gogGames.forEach(g => { if (g.id) byKey[g.id] = g; });
+    gogTagCollections = (tagResult && tagResult.status === 'ok' ? tagResult.collections : [])
+      .map(tc => {
+        const games = tc.appids.map(k => byKey[k]).filter(Boolean);
+        return games.length ? { name: tc.name, count: games.length, games } : null;
+      })
+      .filter(Boolean);
+
     appendTagCollections(grid, 'gog', tagResult, gogGames);
 
     if (hasIntegrated) {
@@ -1927,8 +1988,16 @@ async function loadGogGrid(grid, empty) {
       grid.appendChild(note);
     }
     empty.classList.add('hidden');
+
+    // Show the Tag Roulette button now that we know whether we have any tags
+    if (gogTagCollections.length > 0 && currentPlatform === 'gog') {
+      const collBtn = document.getElementById('btn-coll-roulette');
+      collBtn.textContent   = 'Tag Roulette';
+      collBtn.style.display = '';
+    }
   } else {
-    gogGames = [];
+    gogGames          = [];
+    gogTagCollections = [];
     empty.innerHTML = '<p>No GOG games found. GOG Galaxy must be installed with at least one game.</p>';
     empty.classList.remove('hidden');
   }
@@ -1943,8 +2012,29 @@ async function loadEpicGrid(grid, empty) {
   if (result.status === 'ok' && result.games.length > 0) {
     epicGames = await filterDuplicates(result.games);
     grid.appendChild(makePlatformCard('epic', epicGames));
+
+    // Build and store resolved Epic tag collections for Tag Roulette.
+    const byKey = {};
+    epicGames.forEach(g => {
+      if (g.id) byKey[g.id] = g;
+      if (g.app_name) byKey[`epic_${g.app_name}`] = g;
+    });
+    epicTagCollections = (tagResult && tagResult.status === 'ok' ? tagResult.collections : [])
+      .map(tc => {
+        const games = tc.appids.map(k => byKey[k]).filter(Boolean);
+        return games.length ? { name: tc.name, count: games.length, games } : null;
+      })
+      .filter(Boolean);
+
     appendTagCollections(grid, 'epic', tagResult, epicGames);
     empty.classList.add('hidden');
+
+    // Show Tag Roulette button if we have tags
+    if (epicTagCollections.length > 0 && currentPlatform === 'epic') {
+      const collBtn = document.getElementById('btn-coll-roulette');
+      collBtn.textContent   = 'Tag Roulette';
+      collBtn.style.display = '';
+    }
 
     // If we're only seeing installed games, suggest the Galaxy integration
     // so the user can get their full owned library too.
@@ -1959,7 +2049,8 @@ async function loadEpicGrid(grid, empty) {
       grid.appendChild(note);
     }
   } else {
-    epicGames = [];
+    epicGames           = [];
+    epicTagCollections  = [];
     empty.innerHTML =
       '<p>No Epic games found.</p>' +
       '<p class="hint">For your <strong>full owned Epic library</strong>, install the ' +
@@ -2088,6 +2179,7 @@ function makePlatformCard(platform, games, subtitle = null) {
 function openPlatformSpin(platform, games) {
   spinMode             = 'platform';
   currentPlatformGames = games;
+  applyPlatformTheme(platform);
 
   const NAMES = { gog: 'GOG Library', epic: 'Epic Library', all: 'All Libraries',
                   battlenet: 'Battle.net Library', origin: 'EA App Library',

@@ -14,6 +14,7 @@ import os
 import re
 import sqlite3
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -491,9 +492,29 @@ def load_name_cache():
     return {}
 
 
+_NAME_CACHE_LOCK = threading.Lock()
+
+
 def save_name_cache(cache):
-    with open(NAMES_CACHE, "w", encoding="utf-8") as f:
-        json.dump(cache, f, ensure_ascii=False, indent=2)
+    """Atomically persist the name cache.
+
+    Atomic (write-temp-then-replace) + locked so the background name-warmer
+    thread and the main js_api thread can't corrupt the JSON by writing
+    concurrently.
+    """
+    with _NAME_CACHE_LOCK:
+        tmp = NAMES_CACHE + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(cache, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, NAMES_CACHE)
+        except OSError:
+            # Best-effort: clean up the temp file if the replace failed
+            try:
+                if os.path.isfile(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
 
 
 # ── Playtime parser (localconfig.vdf) ─────────────────────────────────────────
@@ -813,6 +834,22 @@ _TRADEMARK_CHARS = re.compile(r"[™®©℠]")  # ™ ® © ℠
 _PUNCT = re.compile(r"[^a-z0-9\s]+")
 _WS = re.compile(r"\s+")
 
+# Roman → Arabic normalization for cross-platform dedup.
+# Bare "i" is intentionally excluded to avoid treating the English pronoun
+# as the numeral 1 (e.g. "I Have No Mouth And I Must Scream").
+# Longest tokens listed first so the alternation is greedy-safe.
+_NORMALIZE_ROMAN_RE = re.compile(
+    r"\b(xx|xix|xviii|xvii|xvi|xv|xiv|xiii|xii|xi|ix|viii|vii|vi|iv|iii|ii|x|v)\b",
+    re.IGNORECASE,
+)
+_ROMAN_TO_ARABIC_LOWER = {
+    "ii": "2",  "iii": "3",  "iv": "4",  "v": "5",
+    "vi": "6",  "vii": "7",  "viii": "8", "ix": "9",
+    "x": "10", "xi": "11", "xii": "12", "xiii": "13",
+    "xiv": "14", "xv": "15", "xvi": "16", "xvii": "17",
+    "xviii": "18", "xix": "19", "xx": "20",
+}
+
 
 def normalize_title(title):
     """Reduce a game title to a fuzzy-comparable canonical form.
@@ -848,7 +885,99 @@ def normalize_title(title):
     # Strip leading article
     if s.startswith("the "):
         s = s[4:]
+
+    # Normalise Roman numerals → Arabic so platform mismatches don't break
+    # dedup: "Breath of Fire IV" (Steam) == "Breath of Fire 4" (GOG Galaxy).
+    s = _NORMALIZE_ROMAN_RE.sub(
+        lambda m: _ROMAN_TO_ARABIC_LOWER.get(m.group().lower(), m.group()), s
+    )
     return s
+
+
+# ── HowLongToBeat numeral / ampersand search variants ────────────────────────
+#
+# Many game titles differ between launcher databases and HLTB only in how they
+# represent series numbers (Arabic vs Roman) or conjunctions (& vs "and").
+# "Might & Magic 6" on GOG Galaxy → HLTB stores it as "Might & Magic VI".
+# We generate the alternate forms and try them as fallback search terms.
+
+_ARABIC_TO_ROMAN = {
+    '1': 'I',  '2': 'II',   '3': 'III', '4': 'IV',  '5': 'V',
+    '6': 'VI', '7': 'VII',  '8': 'VIII','9': 'IX',  '10': 'X',
+    '11': 'XI','12': 'XII', '13': 'XIII','14': 'XIV','15': 'XV',
+    '16': 'XVI','17': 'XVII','18': 'XVIII','19': 'XIX','20': 'XX',
+}
+_ROMAN_TO_ARABIC = {v: k for k, v in _ARABIC_TO_ROMAN.items()}
+
+# Matches standalone Arabic numerals 1–20 (word boundaries on both sides)
+_STANDALONE_ARABIC_RE = re.compile(r'\b(20|1[0-9]|[1-9])\b')
+# Matches standalone Roman numerals I–XX longest-match first, case-insensitive
+_STANDALONE_ROMAN_RE  = re.compile(
+    r'\b(XX|XIX|XVIII|XVII|XVI|XV|XIV|XIII|XII|XI|IX|VIII|VII|VI|IV|III|II|X|V|I)\b',
+    re.IGNORECASE,
+)
+
+
+def _arabic_to_roman(s):
+    """Replace standalone Arabic numerals 1–20 with Roman equivalents."""
+    return _STANDALONE_ARABIC_RE.sub(
+        lambda m: _ARABIC_TO_ROMAN.get(m.group(), m.group()), s
+    )
+
+
+def _roman_to_arabic(s):
+    """Replace standalone Roman numerals I–XX with Arabic equivalents."""
+    return _STANDALONE_ROMAN_RE.sub(
+        lambda m: _ROMAN_TO_ARABIC.get(m.group().upper(), m.group()), s
+    )
+
+
+def _hltb_search_variants(clean_name, subtitle_re):
+    """Build an ordered list of HLTB search terms to try for *clean_name*.
+
+    Priority:
+      1. Full name as-is
+      2. Full name Arabic → Roman   ("Might & Magic 6"  → "Might & Magic VI")
+      3. Full name Roman  → Arabic  (reverse case)
+      4. Full name & → "and"        ("Might & Magic VI" → "Might and Magic VI")
+      5. Combinations of numerals + ampersand
+      6. Short title (subtitle stripped) and its variants
+
+    Returns a deduplicated list preserving this priority order.
+    """
+    terms: list[str] = []
+    seen:  set[str]  = set()
+
+    def _add(t: str) -> None:
+        t = t.strip()
+        if t and t not in seen:
+            seen.add(t)
+            terms.append(t)
+
+    # Full-name variants
+    _add(clean_name)
+    roman_name  = _arabic_to_roman(clean_name)
+    arabic_name = _roman_to_arabic(clean_name)
+    _add(roman_name)
+    _add(arabic_name)
+    # & ↔ "and" swaps on each numeral variant
+    for base in (clean_name, roman_name, arabic_name):
+        _add(base.replace(' & ', ' and '))
+        _add(re.sub(r'\band\b', '&', base))
+
+    # Short-title variants (everything before the first subtitle separator)
+    short = subtitle_re.split(clean_name)[0].strip()
+    if short and short != clean_name:
+        _add(short)
+        roman_short  = _arabic_to_roman(short)
+        arabic_short = _roman_to_arabic(short)
+        _add(roman_short)
+        _add(arabic_short)
+        for base in (short, roman_short, arabic_short):
+            _add(base.replace(' & ', ' and '))
+            _add(re.sub(r'\band\b', '&', base))
+
+    return terms
 
 
 def find_cross_platform_duplicates(games_by_platform, priority):
@@ -1047,9 +1176,89 @@ class SteamRouletteAPI:
         self._playtimes   = {}   # {appid: minutes_played} from localconfig.vdf
         self._steam_path  = find_steam_path()
         self._window      = None
+        self._name_warmer_lock    = threading.Lock()
+        self._name_warmer_thread  = None
 
     def set_window(self, window):
         self._window = window
+
+    # ── Background name warmer ────────────────────────────────────────────
+    def _start_name_warmer(self, appids):
+        """Resolve missing Steam app names on a background daemon thread.
+
+        Runs entirely off the UI path so startup is never blocked, and works
+        through the ENTIRE unresolved list in one pass so cross-platform
+        duplicates (incl. obscure / uninstalled owned games) are caught on the
+        next dedup computation.  Because the cache persists, this is a
+        one-time cost per machine — once warm, later launches skip it.
+
+        Politeness / resilience:
+          • a small fixed delay between requests (gentle on Steam),
+          • resolved names flushed to cache/names.json every 25 hits, so
+            progress survives a crash or early exit,
+          • a long run of empty results (which usually means Steam is
+            rate-limiting, though it can also just be a cluster of nameless
+            SDK / dedicated-server / delisted appids) triggers a cooldown
+            pause — NOT a bail-out.  We never abandon the list; anything left
+            unresolved is simply retried on the next launch.
+        """
+        with self._name_warmer_lock:
+            if self._name_warmer_thread and self._name_warmer_thread.is_alive():
+                return  # already warming
+            todo = list(dict.fromkeys(appids))  # de-dupe, keep order
+
+            def _worker():
+                DELAY_SEC      = 0.20   # ~5 req/s — gentle on Steam's endpoints
+                COOLDOWN_AFTER = 40     # consecutive empties before we cool off
+                COOLDOWN_SEC   = 20.0   # pause length when likely rate-limited
+                resolved = {}
+                consec_empty = 0
+                for appid in todo:
+                    try:
+                        n = (fetch_name_from_api(appid)
+                             or fetch_name_from_steamspy(appid))
+                    except Exception:
+                        n = None
+                    if n:
+                        resolved[str(appid)] = n
+                        consec_empty = 0
+                    else:
+                        # Empty is normal for delisted/tool appids — do NOT
+                        # bail.  Only cool down if empties pile up (possible
+                        # throttling), then keep going.
+                        consec_empty += 1
+                        if consec_empty >= COOLDOWN_AFTER:
+                            if resolved:
+                                self._merge_names_into_cache(resolved)
+                                resolved = {}
+                            time.sleep(COOLDOWN_SEC)
+                            consec_empty = 0
+                    # Flush periodically so progress isn't lost on a long run
+                    if len(resolved) >= 25:
+                        self._merge_names_into_cache(resolved)
+                        resolved = {}
+                    time.sleep(DELAY_SEC)
+                if resolved:
+                    self._merge_names_into_cache(resolved)
+
+            t = threading.Thread(target=_worker, name="name-warmer", daemon=True)
+            self._name_warmer_thread = t
+            t.start()
+
+    @staticmethod
+    def _merge_names_into_cache(new_names):
+        """Read-merge-write the on-disk name cache (atomic save handles
+        locking).  Only adds keys that aren't already present."""
+        if not new_names:
+            return
+        cache = load_name_cache()
+        changed = False
+        for k, v in new_names.items():
+            if k not in cache and v:
+                cache[k] = v
+                changed = True
+        if changed:
+            save_name_cache(cache)
 
     # ── Collection loading ────────────────────────────────────────────────
 
@@ -1509,11 +1718,10 @@ class SteamRouletteAPI:
             return {"status": "ok", **hit}
         # (None / missing → fall through and search)
 
-        # Build search terms: full clean name first, then bare title as fallback
-        search_terms = [clean_name]
-        short = self._SUBTITLE_RE.split(clean_name)[0].strip()
-        if short and short != clean_name:
-            search_terms.append(short)
+        # Build extended search terms: original name plus Arabic↔Roman numeral
+        # and &↔"and" variants so e.g. "Might & Magic 6" (GOG) finds
+        # "Might & Magic VI" on HLTB.
+        search_terms = _hltb_search_variants(clean_name, self._SUBTITLE_RE)
 
         try:
             from howlongtobeatpy import HowLongToBeat
@@ -1531,10 +1739,13 @@ class SteamRouletteAPI:
             candidate = max(results, key=lambda r: r.similarity)
             return candidate if candidate.similarity >= threshold else None
 
-        # Try full name at 0.55, then shorter title at 0.50
-        best = _best_result(search_terms[0], 0.55)
-        if best is None and len(search_terms) > 1:
-            best = _best_result(search_terms[1], 0.50)
+        # Try the primary term at 0.55; fall back through all variants at 0.50.
+        best = None
+        for i, term in enumerate(search_terms):
+            threshold = 0.55 if i == 0 else 0.50
+            best = _best_result(term, threshold)
+            if best is not None:
+                break
 
         if best is None:
             return {"status": "not_found"}   # not cached — will retry next time
@@ -2196,22 +2407,59 @@ class SteamRouletteAPI:
 
         priority = settings["priority"]
 
-        # Steam: synthesise game dicts from the cached + bulk name pool
+        # Steam: synthesise game dicts from the cached + bulk name pool.
+        # Source the appids from BOTH custom collections AND installed
+        # appmanifest .acf files — otherwise an owned-but-uncategorised
+        # Steam game (no custom collection) is invisible to the dedup
+        # bucket and its GOG/Epic twin slips through.
         steam_appids = set()
         for ids in (self._collections or {}).values():
             steam_appids.update(ids)
+
+        installed_steam = {}
+        if self._steam_path:
+            try:
+                installed_steam = scan_all_acf(self._steam_path)
+            except Exception:
+                installed_steam = {}
+        steam_appids.update(installed_steam.keys())
+
         name_cache = load_name_cache()
         bulk_names = steam_names.get_steam_app_names(CACHE_DIR)
-        def _name_for(appid):
-            return (name_cache.get(str(appid))
-                    or bulk_names.get(str(appid))
+
+        # Resolve names from LOCAL sources only — cache, the SteamSpy bulk
+        # dump (~30k titles), and installed appmanifests.  We deliberately do
+        # NOT hit the network here: this method runs on the loading-screen
+        # path, and a large library can have >1000 uncached appids — fetching
+        # each one synchronously (8s timeout apiece, plus rate-limiting) would
+        # freeze startup for many minutes.
+        #
+        # Any appid still unnamed is handed to a background warmer (below),
+        # which fills the cache politely so it's caught on the next dedup pass.
+        def _local_name(appid):
+            key = str(appid)
+            return (name_cache.get(key)
+                    or bulk_names.get(key)
+                    or installed_steam.get(appid, "")
                     or "")
-        steam_games = [
-            {"id": f"steam_{a}", "raw_id": a, "platform": "steam",
-             "name": _name_for(a)}
-            for a in steam_appids
-            if _name_for(a)
-        ]
+
+        steam_games = []
+        unresolved = []
+        for a in steam_appids:
+            n = _local_name(a)
+            if n:
+                steam_games.append(
+                    {"id": f"steam_{a}", "raw_id": a, "platform": "steam",
+                     "name": n})
+            else:
+                unresolved.append(a)
+
+        # Warm the missing names in the background (non-blocking).  Catches
+        # obscure / uninstalled owned games (e.g. recent re-releases not yet in
+        # the SteamSpy dump) on a later dedup computation without ever
+        # stalling the UI.
+        if unresolved:
+            self._start_name_warmer(unresolved)
 
         # Split GOG result by platform so integrated launchers are deduped
         # independently (not lumped under the 'gog' bucket)
