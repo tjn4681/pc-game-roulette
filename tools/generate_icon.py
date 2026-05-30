@@ -8,7 +8,7 @@ a centre pip).  Each pip is coloured to evoke one of the supported launchers:
     Top-right → GOG          (purple  #a259ff)
     Centre    → Gold / fate  (gold    #f0c040)  — the "Leave It To Fate" wildcard
     Bot-left  → Epic         (white   #f0f0f0)
-    Bot-right → Retroarch    (orange  #f08c00)  — reserved for future launcher
+    Bot-right → RetroArch    (mint    #2ed4a0)
 
 The die body matches the app's --surface colour scheme.  Exported as a
 multi-resolution .ico (256 / 128 / 64 / 48 / 32 / 16 px) and checked into
@@ -39,7 +39,7 @@ PIP_COLORS = [
     "#a259ff",   # GOG     — purple
     "#f0c040",   # Fate    — gold / wildcard
     "#f0f0f0",   # Epic    — white
-    "#f08c00",   # Retroarch — orange (placeholder for future tab)
+    "#57c6a4",   # RetroArch — brighter teal-leaning mint
 ]
 
 # Die body colours (matches the app's dark theme)

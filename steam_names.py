@@ -133,16 +133,39 @@ def load_cache(cache_dir):
         return {}
 
 
+def load_cache_any_age(cache_dir):
+    """Load the cached {appid: name} dict ignoring the TTL.
+
+    Used for stale-while-revalidate: dedup can keep using slightly-stale names
+    (game titles don't change) while a fresh copy is fetched in the background,
+    instead of dropping to an empty bulk and blocking the UI."""
+    path = _cache_path(cache_dir)
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            cached = json.load(f)
+        return cached.get("names") or {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
 def save_cache(cache_dir, names):
-    """Persist the {appid: name} dict to disk."""
+    """Persist the {appid: name} dict to disk (atomic write)."""
     path = _cache_path(cache_dir)
     os.makedirs(cache_dir, exist_ok=True)
     payload = {"fetched_at": time.time(), "names": names}
+    tmp = path + ".tmp"
     try:
-        with open(path, "w", encoding="utf-8") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False)
+        os.replace(tmp, path)
     except OSError:
-        pass
+        try:
+            if os.path.isfile(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
 
 
 def cache_age_seconds(cache_dir):

@@ -13,10 +13,13 @@ let prevGameWinner    = null;   // last winning appid (game mode) or game obj (p
 let prevCollWinner    = null;   // last winning collection
 let pendingStartFrom  = null;   // startFrom value queued by spinAgain for doSpin
 
-let currentPlatform      = 'steam'; // 'steam' | 'gog' | 'epic' | 'all'
+let currentPlatform      = 'steam'; // 'steam' | 'gog' | 'epic' | 'retroarch' | 'all'
 let gogGames             = [];      // [{id, raw_id, name, platform}] from get_gog_games()
 let epicGames            = [];      // [{id, raw_id, name, platform}] from get_epic_games()
 let currentPlatformGames = [];      // active pool when spinMode === 'platform'
+// Base URL of the local RetroArch boxart server (set when the RetroArch grid
+// loads); art tiles are `${retroarchArtBase}/<gameId>/<maxWidthPx>`.
+let retroarchArtBase     = null;
 
 // Tag collections for GOG / Epic: [{name, count, games: [gameObj, ...]}]
 // Populated by loadGogGrid / loadEpicGrid; used for Tag Roulette mode.
@@ -35,14 +38,9 @@ let collectionRoulettePlatform  = 'steam'; // 'steam' | 'gog' | 'epic'
 let dedupExcludes   = null;
 let editionExcludes = null;
 
-async function getDedupExcludes() {
-  if (dedupExcludes !== null) return dedupExcludes;
-  if (!api) {
-    dedupExcludes = { steam: new Set(), gog: new Set(), epic: new Set() };
-    return dedupExcludes;
-  }
-  const r = await api.get_duplicate_filter();
-  dedupExcludes = (r && r.status === 'ok')
+// Parse a backend dedup/edition result into per-platform Sets.
+function _parseDedup(r) {
+  return (r && r.status === 'ok')
     ? { steam:     new Set(r.steam),
         gog:       new Set(r.gog),
         epic:      new Set(r.epic),
@@ -51,23 +49,40 @@ async function getDedupExcludes() {
         uplay:     new Set(r.uplay     || []) }
     : { steam: new Set(), gog: new Set(), epic: new Set(),
         battlenet: new Set(), origin: new Set(), uplay: new Set() };
+}
+function _parseEdition(r) {
+  return (r && r.status === 'ok')
+    ? { steam: new Set(r.steam), gog: new Set(r.gog), epic: new Set(r.epic) }
+    : { steam: new Set(), gog: new Set(), epic: new Set() };
+}
+
+async function getDedupExcludes() {
+  if (dedupExcludes !== null) return dedupExcludes;
+  if (!api) { dedupExcludes = _parseDedup(null); return dedupExcludes; }
+  dedupExcludes = _parseDedup(await api.get_duplicate_filter());
   return dedupExcludes;
 }
 
 async function getEditionExcludes() {
   if (editionExcludes !== null) return editionExcludes;
-  if (!api) {
-    editionExcludes = { steam: new Set(), gog: new Set(), epic: new Set() };
-    return editionExcludes;
-  }
-  const r = await api.get_edition_filter();
-  editionExcludes = (r && r.status === 'ok')
-    ? { steam: new Set(r.steam), gog: new Set(r.gog), epic: new Set(r.epic) }
-    : { steam: new Set(), gog: new Set(), epic: new Set() };
+  if (!api) { editionExcludes = _parseEdition(null); return editionExcludes; }
+  editionExcludes = _parseEdition(await api.get_edition_filter());
   return editionExcludes;
 }
 
 async function getAllExcludes() {
+  // Prime both caches with a single combined backend call so dedup + edition
+  // filtering share one GOG/Epic library fetch instead of two.  Falls back to
+  // the individual lazy loaders if it fails.
+  if (api && dedupExcludes === null && editionExcludes === null) {
+    try {
+      const r = await api.get_all_filters();
+      if (r && r.status === 'ok') {
+        dedupExcludes   = _parseDedup(r.dedup);
+        editionExcludes = _parseEdition(r.edition);
+      }
+    } catch (_) { /* fall through to lazy loaders below */ }
+  }
   const [d, e] = await Promise.all([getDedupExcludes(), getEditionExcludes()]);
   return {
     steam:     new Set([...d.steam,     ...(e.steam     || [])]),
@@ -1130,14 +1145,16 @@ async function refreshDedupPreview() {
     return;
   }
 
-  // Heads-up: the first time dedup runs we need to download the bulk Steam
-  // name database (~30 sec from SteamSpy). After that it's cached for a week.
+  // The first time dedup runs we download the bulk Steam name database
+  // (~30k names from SteamSpy) — but that now happens in the BACKGROUND, so
+  // the app stays responsive. Counts below may start partial and fill in once
+  // the database finishes building; reopen Settings to see the updated tally.
   const status = await api.get_steam_names_status();
   if (!status.cached) {
     preview.innerHTML =
-      '<strong>One-time setup:</strong> Building Steam game name database… ' +
-      'this fetches ~30,000 game names from SteamSpy and takes about 30 seconds. ' +
-      'Subsequent loads are instant.';
+      '<strong>Building the Steam game-name database in the background…</strong> ' +
+      '(~30k names from SteamSpy, takes about 30 seconds and is cached for a week). ' +
+      'Duplicate counts below may be partial until it finishes — reopen Settings to refresh.';
   } else {
     preview.innerHTML = 'Computing duplicates…';
   }
@@ -1810,9 +1827,10 @@ async function debugCurrentCollection() {
 // ── Platform switching ─────────────────────────────────────────────────────
 
 function applyPlatformTheme(platform) {
-  document.body.classList.remove('theme-gog', 'theme-epic');
-  if (platform === 'gog')  document.body.classList.add('theme-gog');
-  if (platform === 'epic') document.body.classList.add('theme-epic');
+  document.body.classList.remove('theme-gog', 'theme-epic', 'theme-retroarch');
+  if (platform === 'gog')       document.body.classList.add('theme-gog');
+  if (platform === 'epic')      document.body.classList.add('theme-epic');
+  if (platform === 'retroarch') document.body.classList.add('theme-retroarch');
 }
 
 async function switchPlatform(platform) {
@@ -1840,6 +1858,8 @@ async function switchPlatform(platform) {
     collBtn.textContent = 'Tag Roulette';
     collBtn.style.display = epicTagCollections.length ? '' : 'none';
   } else {
+    // RetroArch's per-system cards already act as categories — no extra
+    // roulette button needed.
     collBtn.style.display = 'none';
   }
 
@@ -1854,8 +1874,9 @@ async function switchPlatform(platform) {
   empty.classList.add('hidden');
   showScreen('screen-main');
 
-  if (platform === 'gog')  await loadGogGrid(grid, empty);
-  if (platform === 'epic') await loadEpicGrid(grid, empty);
+  if (platform === 'gog')       await loadGogGrid(grid, empty);
+  if (platform === 'epic')      await loadEpicGrid(grid, empty);
+  if (platform === 'retroarch') await loadRetroarchGrid(grid, empty);
 }
 
 // ── Leave It To Fate — combined-platform auto-spinning button ──────────────
@@ -2060,6 +2081,69 @@ async function loadEpicGrid(grid, empty) {
   }
 }
 
+// ── RetroArch ──────────────────────────────────────────────────────────────
+// Unlike the store launchers, RetroArch's "collections" are its per-system
+// playlists (one .lpl per console).  The grid shows a "RetroArch Library"
+// card (spins across every system) plus one card per system.  Games are
+// fetched lazily on click — with a 10k-ROM library we never want to ship the
+// whole list up front.
+async function loadRetroarchGrid(grid, empty) {
+  if (!api) { empty.classList.remove('hidden'); return; }
+  const result = await api.get_retroarch_playlists();
+
+  if (result.status === 'ok' && result.playlists.length > 0) {
+    retroarchArtBase = result.art_base || null;
+    // Library card: spins across every system (system = null).  Give it a
+    // sample boxart from the first system that has one.
+    const libSample = (result.playlists.find(p => p.sample_id) || {}).sample_id || null;
+    grid.appendChild(makeRetroarchCard(
+      { name: 'RetroArch Library', system: null, count: result.total, sample_id: libSample },
+      true,
+    ));
+    // One card per system playlist
+    result.playlists.forEach(pl => grid.appendChild(makeRetroarchCard(pl, false)));
+    empty.classList.add('hidden');
+  } else {
+    empty.innerHTML =
+      '<p>No RetroArch playlists found.</p>' +
+      '<p class="hint">RetroArch must be installed with at least one scanned ' +
+      'playlist. If it\'s installed in an unusual location, it may not have ' +
+      'been detected.</p>';
+    empty.classList.remove('hidden');
+  }
+}
+
+function makeRetroarchCard(pl, isLibrary) {
+  const card = document.createElement('div');
+  card.className = 'coll-card coll-card-retroarch' + (isLibrary ? ' coll-card-library' : '');
+  const count = pl.count || 0;
+  card.innerHTML = `
+    <div class="coll-name" title="${esc(pl.name)}">${esc(pl.name)}</div>
+    <div class="coll-count">${count.toLocaleString()} game${count === 1 ? '' : 's'}</div>
+  `;
+  card.addEventListener('click', () => openRetroarchSpin(pl.system, pl.name));
+
+  // Background art: a representative boxart, loaded from the local art server
+  // (small downscaled JPEG, browser-cached).
+  if (pl.sample_id && retroarchArtBase) {
+    const img = new Image();
+    img.onload = () => {
+      card.style.backgroundImage = `url('${img.src}')`;
+      card.classList.add('has-bg-art');
+    };
+    img.src = `${retroarchArtBase}/${pl.sample_id}/420`;
+  }
+  return card;
+}
+
+async function openRetroarchSpin(system, displayName) {
+  if (!api) return;
+  const result = await api.get_retroarch_games(system || undefined);
+  const games  = (result && result.status === 'ok') ? result.games : [];
+  if (!games.length) { showToast('No games found for this playlist', 'error'); return; }
+  openPlatformSpin('retroarch', games, displayName);
+}
+
 // Append per-tag "collection" cards alongside the full-library card. Tags come
 // from Galaxy's UserReleaseTags table (whatever the user has manually labeled
 // games with in GOG Galaxy). Each tag becomes its own clickable card that
@@ -2176,7 +2260,7 @@ function makePlatformCard(platform, games, subtitle = null) {
   return card;
 }
 
-function openPlatformSpin(platform, games) {
+function openPlatformSpin(platform, games, displayName = null) {
   spinMode             = 'platform';
   currentPlatformGames = games;
   applyPlatformTheme(platform);
@@ -2184,7 +2268,7 @@ function openPlatformSpin(platform, games) {
   const NAMES = { gog: 'GOG Library', epic: 'Epic Library', all: 'All Libraries',
                   battlenet: 'Battle.net Library', origin: 'EA App Library',
                   uplay: 'Ubisoft Library' };
-  document.getElementById('spin-coll-name').textContent  = NAMES[platform] || platform;
+  document.getElementById('spin-coll-name').textContent  = displayName || NAMES[platform] || platform;
   document.getElementById('spin-coll-count').textContent =
     `${games.length.toLocaleString()} game${games.length === 1 ? '' : 's'}`;
 
@@ -2234,6 +2318,28 @@ function buildPlatformReel(games, startFrom = null, forcedWinner = null) {
         attachImgFallback(img, game.raw_id);
         img.src = headerUrl(game.raw_id);
         card.appendChild(img);
+      }
+    } else if (game.platform === 'retroarch') {
+      // Boxart for every tile, served as small downscaled JPEGs from the local
+      // art server (browser loads them in parallel + caches them).  Text card
+      // as the fallback when a game has no thumbnail or the image fails.
+      const makeTextCard = () => {
+        card.className = 'reel-card reel-card-platform' + (isWinner ? ' reel-winner' : '');
+        card.innerHTML = `
+          <div class="reel-card-platform-inner">
+            <div class="platform-game-name">${esc(game.name || game.id)}</div>
+            <span class="reel-system-badge">${esc(game.system || '')}</span>
+          </div>`;
+      };
+      if (game.has_thumb && retroarchArtBase) {
+        card.className = 'reel-card reel-card-platform-img' + (isWinner ? ' reel-winner' : '');
+        const img = document.createElement('img');
+        img.alt = ''; img.draggable = false;
+        img.onerror = makeTextCard;
+        img.src = `${retroarchArtBase}/${game.id}/420`;
+        card.appendChild(img);
+      } else {
+        makeTextCard();
       }
     } else {
       // GOG / Epic: use cover art if Galaxy enrichment provided one;
@@ -2367,6 +2473,18 @@ function showPlatformWinner(game) {
     };
     if (game.name) loadHltbData(game.id, game.name);
 
+  } else if (game.platform === 'retroarch') {
+    nameEl.textContent = game.name;
+    metaEl.textContent = game.system ? `RetroArch · ${game.system}` : 'RetroArch';
+    metaEl.classList.remove('hidden');
+    launchBtn.onclick  = async () => {
+      if (!api) return;
+      const r = await api.launch_retroarch_game(game.id);
+      reportLaunch(r);
+    };
+    // HLTB lookups skipped: ROM labels carry region/revision tags
+    // ("(USA, Europe)", "(SGB Enhanced)") that wreck title matching.
+
   } else {
     // Steam game (from All mode) — fetch name + playtime async
     nameEl.textContent = 'Loading…';
@@ -2463,7 +2581,11 @@ async function init() {
     browseForFile();
   });
   document.getElementById('btn-back-settings').addEventListener('click', () => {
-    renderCollections(allCollections, allShortcutAppids, allHiddenCollections);
+    // Return to the grid for whatever tab is active — not always Steam.
+    // (Leave It To Fate is an action, not a destination, so fall back to
+    // Steam if that was the last "platform".)  This also re-applies any
+    // settings changes to the current platform's grid.
+    switchPlatform(currentPlatform === 'all' ? 'steam' : currentPlatform);
   });
 
   // Epic source picker (radios)
@@ -2516,7 +2638,7 @@ async function init() {
     renderManageList(e.target.value);
   });
   // Platform tab switchers
-  ['steam', 'gog', 'epic'].forEach(p => {
+  ['steam', 'gog', 'epic', 'retroarch'].forEach(p => {
     document.getElementById(`tab-${p}`).addEventListener('click', () => switchPlatform(p));
   });
   // Leave It To Fate — action button, not a tab destination

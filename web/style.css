@@ -816,6 +816,10 @@ button:active { opacity: 0.8; }
   background: rgba(20,20,20,0.95); color: #ffffff;
   box-shadow: 0 0 0 1px rgba(220,220,220,0.35);
 }
+.platform-tab--retroarch.active {
+  background: rgba(18,52,42,0.85); color: #7ee0c2;
+  box-shadow: 0 0 0 1px rgba(87,198,164,0.6);
+}
 
 /* "Leave It To Fate" — distinct gradient pill that always looks like a CTA */
 .platform-tab--litf {
@@ -880,6 +884,13 @@ button:active { opacity: 0.8; }
 .coll-card-all .coll-name { color: var(--accent-hi); }
 .coll-card-all:hover { border-color: var(--accent); }
 
+.coll-card-retroarch {
+  border-color: rgba(87,198,164,0.5);
+  background: linear-gradient(135deg, rgba(20,62,50,0.45) 0%, var(--surface2) 100%);
+}
+.coll-card-retroarch .coll-name { color: #8fdcc4; }
+.coll-card-retroarch:hover { border-color: rgba(126,224,194,0.8); }
+
 /* ── Image-backed reel cards for GOG / Epic (uses Galaxy enrichment art) ─ */
 .reel-card.reel-card-platform-img {
   background: #0a0d13;
@@ -927,6 +938,14 @@ button:active { opacity: 0.8; }
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+.reel-system-badge {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: #8fdcc4;
+  opacity: 0.85;
+  text-align: center;
 }
 .platform-badge {
   font-size: 0.66rem;
@@ -1296,6 +1315,24 @@ body.theme-epic .btn-primary:hover { background: #3a3a3a; }
 body.theme-epic .btn-spin          { background: #222222; color: #f0f0f0; }
 body.theme-epic .btn-spin:hover:not(:disabled) { background: #333333; }
 body.theme-epic .winner-panel { border-color: rgba(220, 220, 220, 0.25); }
+
+/* RetroArch — mint/teal on a deep green-black (RetroArch's mobile palette);
+   distinct from Steam blue, GOG purple, and Epic charcoal/silver */
+body.theme-retroarch {
+  --accent:    #57c6a4;   /* brighter, teal-leaning mint */
+  --accent-hi: #7ee0c2;
+  --bg:        #08130f;
+  --surface:   #0d1c17;
+  --surface2:  #132822;
+  --border:    rgba(87, 198, 164, 0.34);
+}
+body.theme-retroarch .logo-small        { color: var(--accent-hi); }
+body.theme-retroarch .logo              { text-shadow: 0 0 40px rgba(87, 198, 164, 0.45); }
+body.theme-retroarch .btn-primary       { background: var(--accent); color: #02130c; }
+body.theme-retroarch .btn-primary:hover { background: var(--accent-hi); }
+body.theme-retroarch .btn-spin          { background: var(--accent); color: #02130c; }
+body.theme-retroarch .btn-spin:hover:not(:disabled) { background: var(--accent-hi); }
+body.theme-retroarch .winner-panel { border-color: rgba(87, 198, 164, 0.5); }
 
 /* ── Utility ──────────────────────────────────────────────────────────── */
 .hidden { display: none !important; }
