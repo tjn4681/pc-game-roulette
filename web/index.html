@@ -144,6 +144,64 @@
     </div>
   </div>
 
+  <!-- First-run welcome / setup -->
+  <div id="welcome-modal" class="debug-modal hidden">
+    <div class="debug-modal-inner welcome-inner">
+      <div class="debug-modal-header">
+        <span>Welcome to PC Game Roulette</span>
+      </div>
+      <div class="welcome-body">
+        <p class="welcome-lead">
+          Can't decide what to play? This app spins a random game from your library.
+          Your <strong>Steam, GOG, Epic, and RetroArch</strong> libraries are detected
+          automatically — pick a tab and spin.
+        </p>
+
+        <div class="welcome-section">
+          <div class="welcome-section-title">One quick optional step for Steam</div>
+          <p>
+            By default the app sees your <strong>installed</strong> Steam games and any
+            you've sorted into Steam <strong>Collections</strong>.
+          </p>
+          <div class="settings-caveat">
+            <strong>Already organize your games into Steam Collections?</strong>
+            You're all set — skip this. Your collections already give the app your games.
+            <br><br>
+            <strong>Don't use Collections?</strong> To spin across your
+            <em>entire owned library</em> — including games you haven't installed —
+            paste a free <strong>Steam Web API key</strong> below.
+          </div>
+          <a href="#" id="welcome-key-link" class="settings-link">
+            Get a free key in ~30s → steamcommunity.com/dev/apikey
+          </a>
+          <div class="welcome-key-help">
+            Sign in, enter any domain (e.g. <em>localhost</em>), agree, and copy the key.
+            Tip: you can <strong>right-click the box → Paste</strong>.
+          </div>
+          <div class="steam-key-row">
+            <input type="password" id="welcome-key-input" class="steam-key-input"
+                   placeholder="Paste your 32-character key (optional)"
+                   autocomplete="off" spellcheck="false">
+            <button class="btn-primary btn-sm" id="welcome-key-save">Save</button>
+          </div>
+          <div class="steam-key-status" id="welcome-key-status"></div>
+        </div>
+
+        <div class="welcome-actions">
+          <button class="btn-primary" id="welcome-continue">Continue to my library</button>
+        </div>
+        <div class="welcome-footnote">
+          You can add or change this any time in <strong>Settings → Full Steam Library</strong>.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right-click "Paste" menu for text fields -->
+  <div id="paste-menu" class="paste-menu hidden">
+    <button type="button" id="paste-menu-btn">Paste</button>
+  </div>
+
   <!-- Debug modal (Ctrl+Shift+D) -->
   <div id="debug-modal" class="debug-modal hidden">
     <div class="debug-modal-inner">

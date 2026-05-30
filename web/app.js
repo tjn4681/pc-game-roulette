@@ -952,12 +952,12 @@ async function refreshSteamKeyStatus() {
   }
 }
 
-async function saveSteamKey() {
-  const input  = document.getElementById('steam-key-input');
-  const status = document.getElementById('steam-key-status');
-  if (!input || !api) return;
+// Core: validate + save a Steam API key from the given input/status elements.
+// Returns true on success.  Shared by Settings and the first-run welcome.
+async function applySteamKey(input, status) {
+  if (!input || !status || !api) return false;
   const key = input.value.trim();
-  if (!key) return;
+  if (!key) return false;
   status.textContent = 'Verifying with Steam…';
   status.className = 'steam-key-status';
   const r = await api.set_steam_api_key(key);
@@ -967,14 +967,30 @@ async function saveSteamKey() {
     invalidateSteamOwned();
     invalidateAllExcludes();
     input.value = '';
-    await refreshSteamKeyStatus();
-    status.textContent = `✓ Key saved — found ${r.count.toLocaleString()} owned games.`;
+    status.textContent = `✓ Key saved — found ${(r.count || 0).toLocaleString()} owned games.`;
     status.className = 'steam-key-status ok';
-    reloadAfterLibraryChange();
-  } else {
-    status.textContent = '⚠ ' + (r.message || 'Could not save key.');
-    status.className = 'steam-key-status err';
+    return true;
   }
+  status.textContent = '⚠ ' + (r.message || 'Could not save key.');
+  status.className = 'steam-key-status err';
+  return false;
+}
+
+async function saveSteamKey() {
+  const ok = await applySteamKey(
+    document.getElementById('steam-key-input'),
+    document.getElementById('steam-key-status'));
+  if (ok) {
+    document.getElementById('steam-key-clear').classList.remove('hidden');
+    reloadAfterLibraryChange();
+  }
+}
+
+async function saveWelcomeKey() {
+  const ok = await applySteamKey(
+    document.getElementById('welcome-key-input'),
+    document.getElementById('welcome-key-status'));
+  if (ok) reloadAfterLibraryChange();
 }
 
 async function clearSteamKey() {
@@ -991,6 +1007,67 @@ function reloadAfterLibraryChange() {
   if (currentPlatform === 'steam' || currentPlatform === 'all') {
     renderCollections(allCollections, allShortcutAppids, allHiddenCollections);
   }
+}
+
+// ── First-run welcome ─────────────────────────────────────────────────────
+async function maybeShowWelcome() {
+  if (!api) return;
+  try {
+    const r = await api.get_onboarding_state();
+    if (r && r.status === 'ok' && !r.onboarded && r.steam_detected) {
+      document.getElementById('welcome-modal').classList.remove('hidden');
+    }
+  } catch (_) { /* never block startup on the welcome */ }
+}
+
+function dismissWelcome() {
+  document.getElementById('welcome-modal').classList.add('hidden');
+  if (api) api.dismiss_onboarding();
+}
+
+// ── Right-click "Paste" for text fields ───────────────────────────────────
+// Many people don't know Ctrl+V; give every text box a right-click → Paste.
+function setupPasteMenu() {
+  const menu = document.getElementById('paste-menu');
+  const btn  = document.getElementById('paste-menu-btn');
+  if (!menu || !btn) return;
+  let target = null;
+  const hide = () => { menu.classList.add('hidden'); target = null; };
+
+  document.addEventListener('contextmenu', (e) => {
+    const inp = e.target.closest('input[type="text"], input[type="password"], input[type="search"], textarea');
+    if (!inp) { hide(); return; }
+    e.preventDefault();
+    target = inp;
+    // Keep the menu on-screen.
+    const mw = 120, mh = 40;
+    menu.style.left = Math.min(e.clientX, window.innerWidth  - mw) + 'px';
+    menu.style.top  = Math.min(e.clientY, window.innerHeight - mh) + 'px';
+    menu.classList.remove('hidden');
+  });
+
+  btn.addEventListener('click', async () => {
+    const inp = target;
+    hide();
+    if (!inp) return;
+    try {
+      const text = await navigator.clipboard.readText();
+      const s = inp.selectionStart ?? inp.value.length;
+      const en = inp.selectionEnd ?? inp.value.length;
+      inp.value = inp.value.slice(0, s) + text + inp.value.slice(en);
+      inp.focus();
+      const pos = s + text.length;
+      try { inp.setSelectionRange(pos, pos); } catch (_) {}
+      inp.dispatchEvent(new Event('input', { bubbles: true }));
+    } catch (_) {
+      showToast('Couldn’t read the clipboard — try Ctrl+V instead', 'error');
+    }
+  });
+
+  document.addEventListener('click',  (e) => { if (!menu.contains(e.target)) hide(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hide(); });
+  document.addEventListener('scroll', hide, true);
+  window.addEventListener('blur', hide);
 }
 
 // ── Per-launcher visibility (Settings) ───────────────────────────────────
@@ -2620,6 +2697,7 @@ async function init() {
       api = window.pywebview.api;
       handleLoadResult(await api.auto_load());
       loadUserInfo();
+      maybeShowWelcome();
     }
     return;
   }
@@ -2708,6 +2786,21 @@ async function init() {
     e.preventDefault();
     if (api) api.open_external_url('https://steamcommunity.com/dev/apikey');
   });
+
+  // First-run welcome modal
+  document.getElementById('welcome-continue').addEventListener('click', dismissWelcome);
+  document.getElementById('welcome-key-save').addEventListener('click', saveWelcomeKey);
+  document.getElementById('welcome-key-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') saveWelcomeKey();
+  });
+  document.getElementById('welcome-key-link').addEventListener('click', (e) => {
+    e.preventDefault();
+    if (api) api.open_external_url('https://steamcommunity.com/dev/apikey');
+  });
+
+  // Right-click → Paste on text fields
+  setupPasteMenu();
+
   // Sound on/off toggle (live — no need to revisit Settings to hear effect)
   document.getElementById('sound-enabled').addEventListener('change', async (e) => {
     if (!api) return;

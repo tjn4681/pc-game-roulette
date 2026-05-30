@@ -3064,6 +3064,22 @@ class SteamRouletteAPI:
                                           for g in result["games"] if g["name"]})
         return {"status": result["status"], "games": result.get("games", [])}
 
+    # ── First-run onboarding ──────────────────────────────────────────────
+    def get_onboarding_state(self):
+        """Whether to show the first-run welcome (with the optional Steam API
+        key prompt)."""
+        return {
+            "status":         "ok",
+            "onboarded":      bool(get_setting("onboarded", False)),
+            "steam_detected": bool(self._steam_path),
+            "has_key":        epic_auth.load_secret(CACHE_DIR, "steam_api_key") is not None,
+        }
+
+    def dismiss_onboarding(self):
+        """Mark the welcome as seen so it doesn't show again."""
+        set_setting("onboarded", True)
+        return {"status": "ok"}
+
     # ── Game art (winner panel) ───────────────────────────────────────────
 
     def get_game_art(self, appid_str):
