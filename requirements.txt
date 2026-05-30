@@ -1,0 +1,8 @@
+# Runtime dependencies for PC Game Roulette (Windows).
+# pywebview pulls in the WebView2 / .NET bridge (pythonnet) automatically on Windows.
+pywebview>=6.2
+Pillow>=10.0
+
+# For building the distributable (not needed to just run from source):
+#   pip install pyinstaller
+# plus Inno Setup 6 for the installer.
