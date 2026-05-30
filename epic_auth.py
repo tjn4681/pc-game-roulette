@@ -178,6 +178,39 @@ def clear_tokens(cache_dir):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  Generic DPAPI-encrypted secret storage (reused for the Steam API key, etc.)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def store_secret(cache_dir, name, value):
+    """DPAPI-encrypt a small string secret to cache_dir/<name>.bin."""
+    blob = _dpapi_encrypt(value.encode("utf-8"))
+    os.makedirs(cache_dir, exist_ok=True)
+    with open(os.path.join(cache_dir, name + ".bin"), "wb") as f:
+        f.write(blob)
+
+
+def load_secret(cache_dir, name):
+    """Return the decrypted secret string, or None if missing/undecryptable."""
+    path = os.path.join(cache_dir, name + ".bin")
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "rb") as f:
+            return _dpapi_decrypt(f.read()).decode("utf-8")
+    except Exception:
+        return None
+
+
+def clear_secret(cache_dir, name):
+    path = os.path.join(cache_dir, name + ".bin")
+    if os.path.isfile(path):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  OAuth HTTP calls
 # ─────────────────────────────────────────────────────────────────────────────
 

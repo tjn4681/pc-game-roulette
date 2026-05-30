@@ -1030,6 +1030,33 @@ button:active { opacity: 0.8; }
 .settings-caveat strong { color: var(--text); }
 .settings-caveat em { color: var(--accent-hi); font-style: normal; }
 
+/* ── Steam Web API key field ─────────────────────────────────────────── */
+.settings-optional {
+  font-size: 0.72rem; font-weight: 500; color: var(--muted);
+  text-transform: none; letter-spacing: 0;
+}
+.settings-link { color: var(--accent-hi); text-decoration: none; }
+.settings-link:hover { text-decoration: underline; }
+.steam-key-row {
+  display: flex; gap: 8px; align-items: center; margin-top: 12px;
+}
+.steam-key-input {
+  flex: 1; min-width: 0;
+  padding: 9px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 0.85rem;
+  font-family: ui-monospace, Consolas, monospace;
+}
+.steam-key-input:focus { outline: none; border-color: var(--accent); }
+.steam-key-status {
+  margin-top: 8px; font-size: 0.8rem; color: var(--muted); min-height: 1.1em;
+}
+.steam-key-status.ok  { color: #54c98a; }
+.steam-key-status.err { color: #ff8c8c; }
+
 /* ── Per-launcher account connection status ──────────────────────────── */
 .conn-status-list {
   display: flex;

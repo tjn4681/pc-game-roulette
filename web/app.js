@@ -21,6 +21,23 @@ let currentPlatformGames = [];      // active pool when spinMode === 'platform'
 // loads); art tiles are `${retroarchArtBase}/<gameId>/<maxWidthPx>`.
 let retroarchArtBase     = null;
 
+// Full owned Steam library appids via the optional Steam Web API key.
+// null = not yet fetched; [] = no key / unavailable.  When present it becomes
+// the "Whole Library" source (incl. owned-but-uninstalled games).
+let steamOwnedAppids     = null;
+
+async function getSteamOwnedAppids() {
+  if (steamOwnedAppids !== null) return steamOwnedAppids;
+  if (!api) { steamOwnedAppids = []; return steamOwnedAppids; }
+  try {
+    const r = await api.get_steam_owned_games();
+    steamOwnedAppids = (r && r.status === 'ok' && Array.isArray(r.games))
+      ? r.games.map(g => g.appid) : [];
+  } catch (_) { steamOwnedAppids = []; }
+  return steamOwnedAppids;
+}
+function invalidateSteamOwned() { steamOwnedAppids = null; }
+
 // Tag collections for GOG / Epic: [{name, count, games: [gameObj, ...]}]
 // Populated by loadGogGrid / loadEpicGrid; used for Tag Roulette mode.
 let gogTagCollections   = [];
@@ -146,11 +163,16 @@ async function renderCollections(collections, shortcutAppids, hiddenList) {
   // Recompute counts to match what's actually spinnable
   filteredColls.forEach(c => { c.count = c.appids.length; });
 
-  // Whole Library = union of every appid across visible collections + shortcuts
-  let allAppIds = [...new Set([
-    ...filteredColls.flatMap(c => c.appids),
-    ...allShortcutAppids,
-  ])];
+  // "Whole Library" base: the full owned library (if the user added a Steam
+  // API key) takes priority — it includes owned-but-uninstalled games that
+  // collections/installed scans can't see.  Otherwise fall back to the union
+  // of the user's custom collections.  Either way, apply cross-platform dedup
+  // and add non-Steam shortcuts.
+  const ownedAppids = await getSteamOwnedAppids();
+  const wholeBase = ownedAppids.length
+    ? await filterSteamAppids(ownedAppids)
+    : filteredColls.flatMap(c => c.appids);
+  let allAppIds = [...new Set([...wholeBase, ...allShortcutAppids])];
 
   if (allAppIds.length > 0 && !hiddenSet.has('Whole Library')) {
     grid.appendChild(makeCollCard(
@@ -167,8 +189,11 @@ async function renderCollections(collections, shortcutAppids, hiddenList) {
   }
 
   if (!filteredColls.length) {
+    // No custom collections.  We may still have a Whole Library (from the API
+    // key) or shortcuts; only drop to the installed-only scan when there's
+    // genuinely nothing else.
     if (allAppIds.length === 0) loadInstalledLibrary(grid, empty);
-    else { empty.classList.remove('hidden'); showScreen('screen-main'); }
+    else { empty.classList.add('hidden'); showScreen('screen-main'); }
     return;
   }
 
@@ -905,7 +930,67 @@ async function openSettings() {
   await refreshSoundSettings();
   await refreshLauncherVisibility();
   await refreshConnectionStatus();
+  await refreshSteamKeyStatus();
   showScreen('screen-settings');
+}
+
+// ── Steam Web API key (Settings) ──────────────────────────────────────────
+async function refreshSteamKeyStatus() {
+  const input  = document.getElementById('steam-key-input');
+  const clear  = document.getElementById('steam-key-clear');
+  const status = document.getElementById('steam-key-status');
+  if (!input || !api) return;
+  const r = await api.get_steam_api_key_status();
+  const hasKey = r && r.has_key;
+  input.value = '';
+  input.placeholder = hasKey ? 'A key is saved — paste a new one to replace it'
+                             : 'Paste your 32-character key';
+  clear.classList.toggle('hidden', !hasKey);
+  if (status) {
+    status.textContent = hasKey ? '✓ Key saved — your full owned library is in use.' : '';
+    status.className = 'steam-key-status' + (hasKey ? ' ok' : '');
+  }
+}
+
+async function saveSteamKey() {
+  const input  = document.getElementById('steam-key-input');
+  const status = document.getElementById('steam-key-status');
+  if (!input || !api) return;
+  const key = input.value.trim();
+  if (!key) return;
+  status.textContent = 'Verifying with Steam…';
+  status.className = 'steam-key-status';
+  const r = await api.set_steam_api_key(key);
+  if (r.status === 'ok') {
+    // New library source — drop cached views so the Steam tab rebuilds from
+    // the full owned library next time it's shown.
+    invalidateSteamOwned();
+    invalidateAllExcludes();
+    input.value = '';
+    await refreshSteamKeyStatus();
+    status.textContent = `✓ Key saved — found ${r.count.toLocaleString()} owned games.`;
+    status.className = 'steam-key-status ok';
+    reloadAfterLibraryChange();
+  } else {
+    status.textContent = '⚠ ' + (r.message || 'Could not save key.');
+    status.className = 'steam-key-status err';
+  }
+}
+
+async function clearSteamKey() {
+  if (!api) return;
+  await api.clear_steam_api_key();
+  invalidateSteamOwned();
+  invalidateAllExcludes();
+  await refreshSteamKeyStatus();
+  reloadAfterLibraryChange();
+}
+
+// Re-render whatever Steam view is current after the library source changes.
+function reloadAfterLibraryChange() {
+  if (currentPlatform === 'steam' || currentPlatform === 'all') {
+    renderCollections(allCollections, allShortcutAppids, allHiddenCollections);
+  }
 }
 
 // ── Per-launcher visibility (Settings) ───────────────────────────────────
@@ -1911,10 +1996,25 @@ async function leaveItToFate() {
   gogGames  = gogResult.status  === 'ok' ? gogResult.games  : [];
   epicGames = epicResult.status === 'ok' ? epicResult.games : [];
 
-  let steamIds = enabledIds.has('steam') ? [...new Set([
-    ...allCollections.flatMap(c => c.appids),
-    ...allShortcutAppids,
-  ])].map(id => ({ id: `steam_${id}`, raw_id: id, name: null, platform: 'steam' })) : [];
+  // Steam pool for Leave It To Fate, in priority order:
+  //   1. full owned library (API key)  2. custom collections  3. installed games
+  // so a user with no collections still gets their installed games spun
+  // (previously this only used collections → "No games found" for them).
+  let steamIds = [];
+  if (enabledIds.has('steam')) {
+    const owned = await getSteamOwnedAppids();
+    let base = owned.length
+      ? owned
+      : [...new Set(allCollections.flatMap(c => c.appids))];
+    if (!base.length && api) {
+      try {
+        const r = await api.get_installed_games();
+        if (r && r.status === 'ok') base = r.games.map(g => g.appid);
+      } catch (_) { /* leave base empty */ }
+    }
+    steamIds = [...new Set([...base, ...allShortcutAppids])]
+      .map(id => ({ id: `steam_${id}`, raw_id: id, name: null, platform: 'steam' }));
+  }
 
   // Apply cross-platform dedup if enabled
   const filteredSteam  = await filterDuplicates(steamIds);
@@ -2597,6 +2697,17 @@ async function init() {
   // Connect / Disconnect buttons
   document.getElementById('epic-connect-btn').addEventListener('click', openEpicAuthModal);
   document.getElementById('epic-disconnect-btn').addEventListener('click', disconnectEpic);
+
+  // Steam Web API key (full owned library)
+  document.getElementById('steam-key-save').addEventListener('click', saveSteamKey);
+  document.getElementById('steam-key-clear').addEventListener('click', clearSteamKey);
+  document.getElementById('steam-key-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') saveSteamKey();
+  });
+  document.getElementById('steam-key-link').addEventListener('click', (e) => {
+    e.preventDefault();
+    if (api) api.open_external_url('https://steamcommunity.com/dev/apikey');
+  });
   // Sound on/off toggle (live — no need to revisit Settings to hear effect)
   document.getElementById('sound-enabled').addEventListener('change', async (e) => {
     if (!api) return;

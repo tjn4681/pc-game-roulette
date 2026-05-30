@@ -25,6 +25,7 @@ import winreg
 import epic_auth
 import epic_api
 import retroarch
+import steam_api
 import steam_names
 
 
@@ -2519,6 +2520,21 @@ class SteamRouletteAPI:
                 installed_steam = {}
         steam_appids.update(installed_steam.keys())
 
+        # Full owned library via the optional Steam API key (comes with names)
+        # — folds owned-but-uninstalled games into the dedup pool.  Read from
+        # cache ONLY here: this runs on the loading-screen path, so we never
+        # block on the network (the frontend's get_steam_owned_games() does the
+        # actual fetch and warms this cache).
+        owned_names = {}
+        _key = epic_auth.load_secret(CACHE_DIR, "steam_api_key")
+        if _key:
+            _sid = self._steamid64()
+            _cached = steam_api.load_cache(CACHE_DIR, _sid) if _sid else None
+            if _cached and _cached.get("status") == "ok":
+                for g in _cached.get("games", []):
+                    owned_names[g["appid"]] = g["name"]
+                steam_appids.update(owned_names.keys())
+
         name_cache = load_name_cache()
         bulk_names = self._bulk_steam_names()
 
@@ -2536,6 +2552,7 @@ class SteamRouletteAPI:
             return (name_cache.get(key)
                     or bulk_names.get(key)
                     or installed_steam.get(appid, "")
+                    or owned_names.get(appid, "")
                     or "")
 
         steam_games = []
@@ -2951,6 +2968,101 @@ class SteamRouletteAPI:
             "games": [{"appid": appid, "name": name}
                       for appid, name in sorted(games.items(), key=lambda kv: kv[1].lower())],
         }
+
+    # ── Steam Web API key + full owned library (opt-in) ───────────────────
+    def _steamid64(self):
+        """Best-effort 64-bit SteamID for the active user.
+
+        Prefer the account id baked into our collections path; fall back to the
+        most-recent user in loginusers.vdf so this still works for users who
+        have no collections file at all."""
+        info = self.get_user_info()
+        if info.get("status") == "ok" and info.get("steamid64"):
+            return info["steamid64"]
+        if self._steam_path:
+            lu = os.path.join(self._steam_path, "config", "loginusers.vdf")
+            if os.path.isfile(lu):
+                try:
+                    with open(lu, "r", encoding="utf-8", errors="replace") as f:
+                        content = f.read()
+                    first = None
+                    for m in re.finditer(r'"(7656\d{10,})"\s*\{(.*?)\n\s*\}',
+                                         content, re.DOTALL):
+                        sid, body = m.group(1), m.group(2)
+                        if first is None:
+                            first = sid
+                        if re.search(r'"MostRecent"\s*"1"', body):
+                            return sid
+                    return first
+                except Exception:
+                    pass
+        return None
+
+    def set_steam_api_key(self, key):
+        """Validate + store a Steam Web API key (DPAPI-encrypted) and verify it
+        works by doing one live GetOwnedGames call.  Returns a status the
+        Settings UI can show."""
+        key = (key or "").strip()
+        if not steam_api.validate_key_format(key):
+            return {"status": "invalid_format",
+                    "message": "That doesn't look like a Steam Web API key "
+                               "(it should be 32 letters/numbers)."}
+        sid = self._steamid64()
+        if not sid:
+            return {"status": "no_steamid",
+                    "message": "Couldn't determine your SteamID — is Steam installed and signed in?"}
+        games, st = steam_api.fetch_owned(key, sid)
+        if st == "unauthorized":
+            return {"status": "unauthorized",
+                    "message": "Steam rejected that key. Double-check you copied it correctly."}
+        if st == "error":
+            return {"status": "error",
+                    "message": "Couldn't reach Steam to verify the key. Check your connection and try again."}
+        # st in ('ok', 'private') — the key itself is valid; persist it.
+        epic_auth.store_secret(CACHE_DIR, "steam_api_key", key)
+        steam_api.save_cache(CACHE_DIR, sid, st, games)
+        if st == "private":
+            return {"status": "private",
+                    "message": "Key saved, but your Steam profile's Game details "
+                               "are private — set them to Public so the key can "
+                               "read your library (Steam → Profile → Edit → Privacy)."}
+        # Fold the fetched names into the on-disk name cache for dedup/display.
+        self._merge_names_into_cache({str(g["appid"]): g["name"]
+                                      for g in games if g["name"]})
+        return {"status": "ok", "count": len(games)}
+
+    def get_steam_api_key_status(self):
+        """Whether a key is stored (never returns the key itself)."""
+        return {"status": "ok",
+                "has_key": epic_auth.load_secret(CACHE_DIR, "steam_api_key") is not None}
+
+    def clear_steam_api_key(self):
+        """Forget the stored key and drop the owned-library cache."""
+        epic_auth.clear_secret(CACHE_DIR, "steam_api_key")
+        steam_api.clear_cache(CACHE_DIR)
+        return {"status": "ok"}
+
+    def get_steam_owned_games(self, force_refresh=False):
+        """Full owned Steam library via the user's API key (cached).
+
+        Returns {status, games:[{appid,name}]}.  status:
+          'ok'        — games returned
+          'no_key'    — no API key stored (caller uses collections/installed)
+          'private'   — key works but profile game details are private
+          'unauthorized' / 'error' — key/network problem
+        """
+        key = epic_auth.load_secret(CACHE_DIR, "steam_api_key")
+        if not key:
+            return {"status": "no_key", "games": []}
+        sid = self._steamid64()
+        if not sid:
+            return {"status": "error", "games": [],
+                    "message": "Couldn't determine your SteamID."}
+        result = steam_api.get_owned(CACHE_DIR, key, sid, force_refresh=force_refresh)
+        if result["status"] == "ok" and result.get("games") and not result.get("cached"):
+            self._merge_names_into_cache({str(g["appid"]): g["name"]
+                                          for g in result["games"] if g["name"]})
+        return {"status": result["status"], "games": result.get("games", [])}
 
     # ── Game art (winner panel) ───────────────────────────────────────────
 

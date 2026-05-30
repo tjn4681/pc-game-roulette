@@ -207,6 +207,27 @@
         <div class="conn-status-list" id="conn-status-list"></div>
       </section>
       <section class="settings-section">
+        <h3>Full Steam Library <span class="settings-optional">(optional)</span></h3>
+        <div class="settings-caveat">
+          By default the app shows your <strong>installed</strong> Steam games plus any
+          you've put in <strong>Collections</strong>. To spin across your
+          <strong>entire owned library</strong> — including games you haven't installed —
+          add a free <strong>Steam Web API key</strong>.
+          <br><br>
+          Get one in 30&nbsp;seconds at
+          <a href="#" id="steam-key-link" class="settings-link">steamcommunity.com/dev/apikey</a>
+          (sign in, enter any domain like <em>localhost</em>, agree, copy the key).
+          It's stored encrypted on your PC and only ever sent to Steam.
+        </div>
+        <div class="steam-key-row">
+          <input type="password" id="steam-key-input" class="steam-key-input"
+                 placeholder="Paste your 32-character key" autocomplete="off" spellcheck="false">
+          <button class="btn-primary btn-sm" id="steam-key-save">Save</button>
+          <button class="btn-secondary btn-sm hidden" id="steam-key-clear">Remove</button>
+        </div>
+        <div class="steam-key-status" id="steam-key-status"></div>
+      </section>
+      <section class="settings-section">
         <h3>Launcher Visibility</h3>
         <div class="launcher-vis-label">Show or hide each launcher's tab. Hidden launchers are also excluded from Leave It To Fate.</div>
         <div class="launcher-vis-list" id="launcher-vis-list"></div>
