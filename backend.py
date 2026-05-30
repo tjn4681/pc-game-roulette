@@ -30,7 +30,21 @@ import steam_names
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
-SCRIPT_DIR      = os.path.dirname(os.path.abspath(__file__))
+def _data_dir():
+    """Directory for writable runtime data (config, cache, Epic tokens, the
+    WebView2 profile).
+
+    When frozen by PyInstaller we store this NEXT TO THE EXE, not in the
+    onefile temp-extraction dir (sys._MEIPASS) which is wiped on every launch —
+    otherwise the app would forget its Steam path, re-download name caches, and
+    drop the Epic login every run.  Storing it beside the exe also keeps the
+    app portable.  In development it's just the source tree."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+SCRIPT_DIR      = _data_dir()
 CONFIG_FILE     = os.path.join(SCRIPT_DIR, "config.json")
 CACHE_DIR       = os.path.join(SCRIPT_DIR, "cache")
 NAMES_CACHE     = os.path.join(CACHE_DIR,  "names.json")

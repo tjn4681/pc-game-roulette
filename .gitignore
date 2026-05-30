@@ -3,7 +3,9 @@ __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
+# Auto-generated PyInstaller specs are ignored, but keep our hand-written one
 *.spec
+!pc-game-roulette.spec
 build/
 dist/
 

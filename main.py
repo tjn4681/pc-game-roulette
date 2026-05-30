@@ -11,17 +11,30 @@ import sys
 import webview
 from backend import SteamRouletteAPI
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-WEB_DIR    = os.path.join(SCRIPT_DIR, "web")
-ICON_PATH  = os.path.join(SCRIPT_DIR, "app.ico")
+def _resource_dir():
+    """Read-only bundled assets (web/, app.ico).  PyInstaller unpacks these to
+    sys._MEIPASS at runtime; in development it's the source tree."""
+    return getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+
+
+def _data_dir():
+    """Writable data, stored next to the .exe when frozen (portable) so it
+    survives across launches — NOT in the onefile temp dir."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+WEB_DIR    = os.path.join(_resource_dir(), "web")
+ICON_PATH  = os.path.join(_resource_dir(), "app.ico")
 # Persistent WebView2 profile.  By default pywebview runs in private_mode,
 # which spins up a throw-away profile in a random %TEMP% folder every launch —
 # so WebView2's HTTP cache is discarded and every game header image is
 # re-downloaded from the Steam CDN on each run (and %TEMP% slowly fills with
 # leftover EBWebView folders).  Pinning a persistent profile here lets the
 # browser cache survive between launches: card art loads from disk on repeat
-# runs instead of the network.  Kept under cache/ so the app stays portable.
-PROFILE_DIR = os.path.join(SCRIPT_DIR, "cache", "webview")
+# runs instead of the network.  Kept beside the exe / source so it's portable.
+PROFILE_DIR = os.path.join(_data_dir(), "cache", "webview")
 
 # Unique AppUserModelID so Windows groups our window under the custom icon in
 # the taskbar instead of the generic python.exe icon.
