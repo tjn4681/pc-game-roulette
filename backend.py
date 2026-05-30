@@ -34,14 +34,23 @@ def _data_dir():
     """Directory for writable runtime data (config, cache, Epic tokens, the
     WebView2 profile).
 
-    When frozen by PyInstaller we store this NEXT TO THE EXE, not in the
-    onefile temp-extraction dir (sys._MEIPASS) which is wiped on every launch —
-    otherwise the app would forget its Steam path, re-download name caches, and
-    drop the Epic login every run.  Storing it beside the exe also keeps the
-    app portable.  In development it's just the source tree."""
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
+    Development → the source tree.
+
+    Frozen (the installed app) → per-user %LOCALAPPDATA%\\PC Game Roulette.
+    This is robust no matter where the app is installed (Program Files is
+    read-only for standard users) and survives updates.  We deliberately do NOT
+    use the onefile temp-extraction dir (sys._MEIPASS), which is wiped every
+    launch.
+
+    Portable escape hatch: drop an empty 'portable.flag' file next to the .exe
+    and data is stored beside it instead (e.g. for a USB-stick copy)."""
+    if not getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(__file__))
+    exe_dir = os.path.dirname(sys.executable)
+    if os.path.isfile(os.path.join(exe_dir, "portable.flag")):
+        return exe_dir
+    base = os.environ.get("LOCALAPPDATA") or exe_dir
+    return os.path.join(base, "PC Game Roulette")
 
 
 SCRIPT_DIR      = _data_dir()
@@ -481,6 +490,7 @@ def save_config(cfg):
     concurrent writer can't leave a half-written, unparseable config."""
     tmp = CONFIG_FILE + ".tmp"
     try:
+        os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2)
         os.replace(tmp, CONFIG_FILE)

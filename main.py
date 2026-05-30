@@ -9,20 +9,13 @@ import os
 import shutil
 import sys
 import webview
-from backend import SteamRouletteAPI
+from backend import SteamRouletteAPI, CACHE_DIR
+
 
 def _resource_dir():
     """Read-only bundled assets (web/, app.ico).  PyInstaller unpacks these to
     sys._MEIPASS at runtime; in development it's the source tree."""
     return getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
-
-
-def _data_dir():
-    """Writable data, stored next to the .exe when frozen (portable) so it
-    survives across launches — NOT in the onefile temp dir."""
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
 
 
 WEB_DIR    = os.path.join(_resource_dir(), "web")
@@ -33,8 +26,10 @@ ICON_PATH  = os.path.join(_resource_dir(), "app.ico")
 # re-downloaded from the Steam CDN on each run (and %TEMP% slowly fills with
 # leftover EBWebView folders).  Pinning a persistent profile here lets the
 # browser cache survive between launches: card art loads from disk on repeat
-# runs instead of the network.  Kept beside the exe / source so it's portable.
-PROFILE_DIR = os.path.join(_data_dir(), "cache", "webview")
+# runs instead of the network.  Shares backend's data dir (per-user
+# %LOCALAPPDATA% when installed, or the source tree in dev) so there's a single
+# source of truth for where writable data lives.
+PROFILE_DIR = os.path.join(CACHE_DIR, "webview")
 
 # Unique AppUserModelID so Windows groups our window under the custom icon in
 # the taskbar instead of the generic python.exe icon.
