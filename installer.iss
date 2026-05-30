@@ -16,7 +16,7 @@
 ; install folder — so it works from Program Files and survives updates.
 
 #define MyAppName "PC Game Roulette"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.1.0"
 #define MyAppPublisher "TheFinalTommy"
 #define MyAppExeName "PC Game Roulette.exe"
 
