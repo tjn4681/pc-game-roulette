@@ -1078,6 +1078,31 @@ button:active { opacity: 0.8; }
 }
 .paste-menu button:hover { background: var(--accent); color: #fff; }
 
+/* ── "Working" overlay (e.g. filtering duplicates) ───────────────────── */
+.filtering-overlay {
+  position: fixed; inset: 0; z-index: 9000;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(8, 10, 16, 0.45);
+  backdrop-filter: blur(2px);
+}
+.filtering-card {
+  display: flex; align-items: center; gap: 14px;
+  padding: 18px 26px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+}
+.filtering-spinner {
+  width: 22px; height: 22px; flex-shrink: 0;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: filtering-spin 0.8s linear infinite;
+}
+@keyframes filtering-spin { to { transform: rotate(360deg); } }
+.filtering-text { font-size: 0.95rem; color: var(--text); font-weight: 600; }
+
 /* ── First-run welcome modal ─────────────────────────────────────────── */
 .welcome-inner { max-width: 560px; width: 90%; }
 .welcome-body { padding: 20px 22px 22px; }

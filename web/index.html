@@ -202,6 +202,14 @@
     <button type="button" id="paste-menu-btn">Paste</button>
   </div>
 
+  <!-- Lightweight "working" indicator (e.g. while filtering duplicates) -->
+  <div id="filtering-overlay" class="filtering-overlay hidden">
+    <div class="filtering-card">
+      <div class="filtering-spinner"></div>
+      <div id="filtering-text" class="filtering-text">Filtering your library…</div>
+    </div>
+  </div>
+
   <!-- Debug modal (Ctrl+Shift+D) -->
   <div id="debug-modal" class="debug-modal hidden">
     <div class="debug-modal-inner">

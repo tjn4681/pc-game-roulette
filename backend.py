@@ -9,6 +9,7 @@ Exposed to the frontend via js_api in main.py.
 """
 
 import base64
+import functools
 import hashlib
 import io
 import json
@@ -947,8 +948,13 @@ _ROMAN_TO_ARABIC_LOWER = {
 }
 
 
+@functools.lru_cache(maxsize=50000)
 def normalize_title(title):
     """Reduce a game title to a fuzzy-comparable canonical form.
+
+    Cached: it's a pure function called repeatedly on the same titles across a
+    dedup pass (bucketing, the Steam name set, the cross-platform candidate
+    scan), so memoizing turns those repeats into instant lookups.
 
     Examples:
       "Batman: Arkham City"                          -> "batman arkham city"
@@ -2754,8 +2760,16 @@ class SteamRouletteAPI:
         fetching each platform's library only once and sharing it between the
         two filters.  The frontend calls this instead of get_duplicate_filter +
         get_edition_filter separately (which each re-queried GOG / Epic)."""
-        gog  = self.get_gog_games().get("games", [])
-        epic = self.get_epic_games().get("games", [])
+        dedup_on   = self.get_dedup_settings()["enabled"]
+        edition_on = get_setting("edition_preference", "both") in ("enhanced", "original")
+        # Only fetch the GOG / Epic libraries if a filter actually needs them.
+        # When both are off (the default), this avoids a potentially slow
+        # library fetch — e.g. a cold Epic OAuth call — on the loading path.
+        if dedup_on or edition_on:
+            gog  = self.get_gog_games().get("games", [])
+            epic = self.get_epic_games().get("games", [])
+        else:
+            gog, epic = [], []
         return {
             "status":  "ok",
             "dedup":   self.get_duplicate_filter(_gog_games=gog, _epic_games=epic),

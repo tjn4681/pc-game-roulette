@@ -92,6 +92,9 @@ async function getAllExcludes() {
   // filtering share one GOG/Epic library fetch instead of two.  Falls back to
   // the individual lazy loaders if it fails.
   if (api && dedupExcludes === null && editionExcludes === null) {
+    // Show a "Filtering…" indicator only if this actually takes a moment
+    // (e.g. a cold GOG/Epic library fetch) — no flash for the fast cached case.
+    const indicator = setTimeout(() => showFilteringOverlay('Filtering your library…'), 250);
     try {
       const r = await api.get_all_filters();
       if (r && r.status === 'ok') {
@@ -99,6 +102,7 @@ async function getAllExcludes() {
         editionExcludes = _parseEdition(r.edition);
       }
     } catch (_) { /* fall through to lazy loaders below */ }
+    finally { clearTimeout(indicator); hideFilteringOverlay(); }
   }
   const [d, e] = await Promise.all([getDedupExcludes(), getEditionExcludes()]);
   return {
@@ -114,6 +118,19 @@ async function getAllExcludes() {
 function invalidateDedupCache()   { dedupExcludes = null; }
 function invalidateEditionCache() { editionExcludes = null; }
 function invalidateAllExcludes()  { dedupExcludes = null; editionExcludes = null; }
+
+// Lightweight "working" overlay (used while filtering duplicates can take a
+// moment, e.g. a cold library fetch).
+function showFilteringOverlay(text) {
+  const el = document.getElementById('filtering-overlay');
+  if (!el) return;
+  if (text) document.getElementById('filtering-text').textContent = text;
+  el.classList.remove('hidden');
+}
+function hideFilteringOverlay() {
+  const el = document.getElementById('filtering-overlay');
+  if (el) el.classList.add('hidden');
+}
 
 // Drop games whose id is in any of the per-platform exclude sets.
 async function filterDuplicates(games) {
@@ -2814,7 +2831,9 @@ async function init() {
     const s = await api.get_dedup_settings();
     await api.set_dedup_settings(e.target.checked, s.priority);
     await refreshDedupSettings();
-    invalidateDedupCache();
+    // Invalidate both so the next library filter re-primes through the
+    // overlay-wrapped combined path (shows "Filtering…" if it takes a moment).
+    invalidateAllExcludes();
   });
 
   // Edition preference: any of the three radios
