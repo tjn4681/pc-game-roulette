@@ -2232,6 +2232,15 @@ class SteamRouletteAPI:
         set_setting("epic_source", source)
         return {"status": "ok", "source": source}
 
+    def get_epic_merge(self):
+        """Whether Epic games should be folded into the GOG tab (instead of
+        getting their own tab).  Useful for small Epic libraries."""
+        return {"status": "ok", "enabled": bool(get_setting("merge_epic_into_gog", False))}
+
+    def set_epic_merge(self, enabled):
+        set_setting("merge_epic_into_gog", bool(enabled))
+        return {"status": "ok", "enabled": bool(enabled)}
+
     def epic_oauth_url(self):
         """Return the Epic login URL the user opens in their browser."""
         return {"status": "ok", "url": epic_auth.get_login_url()}

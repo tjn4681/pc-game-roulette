@@ -42,6 +42,9 @@ function invalidateSteamOwned() { steamOwnedAppids = null; }
 // Populated by loadGogGrid / loadEpicGrid; used for Tag Roulette mode.
 let gogTagCollections   = [];
 let epicTagCollections  = [];
+// When true, Epic games are folded into the GOG tab and the Epic tab is hidden
+// (a Settings option for users with small Epic libraries).
+let epicMergedIntoGog   = false;
 // The collection list currently driving the Collection Roulette spin.
 // Points at allCollections for Steam, gogTagCollections/epicTagCollections otherwise.
 let activeTagCollections        = [];
@@ -1131,6 +1134,7 @@ async function refreshConnectionStatus() {
 
 async function refreshLauncherVisibility() {
   if (!api) return;
+  await refreshEpicMerge();   // sets epicMergedIntoGog before we apply visibility
   const r = await api.get_launcher_status();
   if (r.status !== 'ok') return;
   launcherStatusCache = r.launchers;
@@ -1170,15 +1174,32 @@ function applyLauncherVisibility(launchers) {
   launchers.forEach(l => {
     const tab = document.getElementById(`tab-${l.id}`);
     if (!tab) return;
-    tab.style.display = l.enabled ? '' : 'none';
+    // Epic gets no tab of its own when it's folded into the GOG library.
+    const hidden = !l.enabled || (l.id === 'epic' && epicMergedIntoGog);
+    tab.style.display = hidden ? 'none' : '';
   });
   // If the user disabled their currently-active tab, fall back to Steam
   // (or any remaining enabled tab) so we don't leave them stranded.
   const activeTab = document.querySelector('.platform-tab.active');
   if (activeTab && activeTab.style.display === 'none') {
-    const fallback = launchers.find(l => l.enabled);
+    const fallback = launchers.find(l => l.enabled &&
+      !(l.id === 'epic' && epicMergedIntoGog));
     if (fallback) switchPlatform(fallback.id);
   }
+}
+
+// Load + apply the Epic-merge setting: hide/show the Epic tab and, if the user
+// is sitting on a tab that just changed, refresh it.
+async function refreshEpicMerge() {
+  if (!api) return;
+  try {
+    const r = await api.get_epic_merge();
+    epicMergedIntoGog = !!(r && r.enabled);
+  } catch (_) { epicMergedIntoGog = false; }
+  const epicTab = document.getElementById('tab-epic');
+  if (epicTab && epicMergedIntoGog) epicTab.style.display = 'none';
+  const cb = document.getElementById('epic-merge-toggle');
+  if (cb) cb.checked = epicMergedIntoGog;
 }
 
 async function refreshSoundSettings() {
@@ -2153,25 +2174,35 @@ async function leaveItToFate() {
 
 async function loadGogGrid(grid, empty) {
   if (!api) { empty.classList.remove('hidden'); return; }
-  const [result, tagResult] = await Promise.all([
-    api.get_gog_games(),
-    api.get_galaxy_collections('gog'),
-  ]);
+  const mergeEpic = epicMergedIntoGog;
+  const fetches = [api.get_gog_games(), api.get_galaxy_collections('gog')];
+  if (mergeEpic) {
+    fetches.push(api.get_epic_games());
+    fetches.push(api.get_galaxy_collections('epic'));
+  }
+  const [result, tagResult, epicResult, epicTagResult] = await Promise.all(fetches);
 
-  if (result.status === 'ok' && result.games.length > 0) {
+  // Pre-dedup pool = GOG (+ integrated) and, when merged, Epic too.
+  let preDedup = (result.status === 'ok') ? result.games.slice() : [];
+  if (mergeEpic && epicResult && epicResult.status === 'ok') {
+    preDedup = preDedup.concat(epicResult.games);
+  }
+
+  if (preDedup.length > 0) {
     // Show the pre-dedup total on the card so the user sees all their games;
     // the actual spin pool uses the deduped list to avoid cross-platform doubles
-    const preDedup      = result.games;
     gogGames            = await filterDuplicates(preDedup);
 
     // Split out the integrated-launcher games so we can show per-platform cards
     const bnetGames   = gogGames.filter(g => g.platform === 'battlenet');
     const originGames = gogGames.filter(g => g.platform === 'origin');
     const uplayGames  = gogGames.filter(g => g.platform === 'uplay');
-    const hasIntegrated = bnetGames.length > 0 || originGames.length > 0 || uplayGames.length > 0;
+    const epicMerged  = mergeEpic ? gogGames.filter(g => g.platform === 'epic') : [];
+    const hasIntegrated = bnetGames.length > 0 || originGames.length > 0 ||
+                          uplayGames.length > 0 || epicMerged.length > 0;
 
     // Main card: show pre-dedup count (so integrated games are always visible),
-    // but clicking spins only the deduped pool (no Steam/Epic doubles)
+    // but clicking spins only the deduped pool (no Steam doubles)
     const totalLabel = `${preDedup.length.toLocaleString()} game${preDedup.length === 1 ? '' : 's'}`;
     grid.appendChild(makePlatformCard('gog', gogGames, totalLabel));
 
@@ -2179,27 +2210,39 @@ async function loadGogGrid(grid, empty) {
     if (bnetGames.length)   grid.appendChild(makePlatformCard('battlenet', bnetGames));
     if (originGames.length) grid.appendChild(makePlatformCard('origin',    originGames));
     if (uplayGames.length)  grid.appendChild(makePlatformCard('uplay',     uplayGames));
+    if (epicMerged.length)  grid.appendChild(makePlatformCard('epic',      epicMerged));
 
-    // Build and store resolved GOG tag collections for Tag Roulette.
-    // Resolve each tag's appid list to actual game objects.
+    // Build and store resolved tag collections for Tag Roulette (GOG tags,
+    // plus Epic tags when merged).  Resolve each tag's appid list to games.
     const byKey = {};
-    gogGames.forEach(g => { if (g.id) byKey[g.id] = g; });
-    gogTagCollections = (tagResult && tagResult.status === 'ok' ? tagResult.collections : [])
+    gogGames.forEach(g => {
+      if (g.id) byKey[g.id] = g;
+      if (g.app_name) byKey[`epic_${g.app_name}`] = g;   // Epic OAuth ↔ Galaxy bridge
+    });
+    let combinedTags = (tagResult && tagResult.status === 'ok' ? tagResult.collections : []);
+    if (mergeEpic && epicTagResult && epicTagResult.status === 'ok') {
+      combinedTags = combinedTags.concat(epicTagResult.collections);
+    }
+    gogTagCollections = combinedTags
       .map(tc => {
         const games = tc.appids.map(k => byKey[k]).filter(Boolean);
         return games.length ? { name: tc.name, count: games.length, games } : null;
       })
       .filter(Boolean);
 
-    appendTagCollections(grid, 'gog', tagResult, gogGames);
+    appendTagCollections(grid, 'gog', { status: 'ok', collections: combinedTags }, gogGames);
 
     if (hasIntegrated) {
+      const extras = ['Battle.net', 'EA App', 'Ubisoft Connect'];
+      if (epicMerged.length) extras.push('Epic');
+      const list = extras.length > 1
+        ? extras.slice(0, -1).join(', ') + ', and ' + extras[extras.length - 1]
+        : extras[0];
       const note = document.createElement('div');
       note.className = 'platform-hint';
       note.innerHTML =
-        `Battle.net, EA App, and Ubisoft Connect games shown above are pulled from ` +
-        `your <strong>GOG Galaxy</strong> integrations and are included in the ` +
-        `<em>GOG Library</em> combined pool.`;
+        `${list} games shown above are pulled from your <strong>GOG Galaxy</strong> ` +
+        `integrations and are included in the <em>GOG Library</em> combined pool.`;
       grid.appendChild(note);
     }
     empty.classList.add('hidden');
@@ -2823,6 +2866,16 @@ async function init() {
     if (!api) return;
     soundEnabled = e.target.checked;
     await api.set_sound_enabled(soundEnabled);
+  });
+
+  // Fold Epic into the GOG tab
+  document.getElementById('epic-merge-toggle').addEventListener('change', async (e) => {
+    if (!api) return;
+    await api.set_epic_merge(e.target.checked);
+    epicMergedIntoGog = e.target.checked;
+    await refreshLauncherVisibility();   // re-evaluate the Epic tab (enabled + merge)
+    if (epicMergedIntoGog && currentPlatform === 'epic') switchPlatform('gog');
+    else if (currentPlatform === 'gog') switchPlatform('gog');  // refold Epic in/out
   });
 
   // Cross-platform duplicates: toggle handler
