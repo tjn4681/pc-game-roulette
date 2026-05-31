@@ -144,54 +144,124 @@
     </div>
   </div>
 
-  <!-- First-run welcome / setup -->
+  <!-- First-run setup wizard -->
   <div id="welcome-modal" class="debug-modal hidden">
     <div class="debug-modal-inner welcome-inner">
       <div class="debug-modal-header">
-        <span>Welcome to PC Game Roulette</span>
+        <span id="wz-title">Welcome to PC Game Roulette</span>
+        <span class="wz-progress" id="wz-progress"></span>
       </div>
       <div class="welcome-body">
-        <p class="welcome-lead">
-          Can't decide what to play? This app spins a random game from your library.
-          Your <strong>Steam, GOG, Epic, and RetroArch</strong> libraries are detected
-          automatically — pick a tab and spin.
-        </p>
 
-        <div class="welcome-section">
-          <div class="welcome-section-title">One quick optional step for Steam</div>
-          <p>
-            By default the app sees your <strong>installed</strong> Steam games and any
-            you've sorted into Steam <strong>Collections</strong>.
+        <!-- Step: welcome -->
+        <div class="wz-panel" data-step="welcome">
+          <p class="welcome-lead">
+            Can't decide what to play? This app spins a random game from your library.
+            Your <strong>Steam, GOG, Epic, and RetroArch</strong> libraries are detected
+            automatically.
           </p>
+          <p class="welcome-key-help">
+            A few quick, optional choices follow — skip any (or all) of them and tweak
+            things later in Settings.
+          </p>
+        </div>
+
+        <!-- Step: Steam full library -->
+        <div class="wz-panel hidden" data-step="steam">
+          <div class="welcome-section-title">Your full Steam library (optional)</div>
+          <p>By default the app sees your <strong>installed</strong> Steam games and any
+            you've sorted into Steam <strong>Collections</strong>.</p>
           <div class="settings-caveat">
-            <strong>Already organize your games into Steam Collections?</strong>
-            You're all set — skip this. Your collections already give the app your games.
+            <strong>Already use Steam Collections?</strong> You're set — skip this.
             <br><br>
-            <strong>Don't use Collections?</strong> To spin across your
-            <em>entire owned library</em> — including games you haven't installed —
-            paste a free <strong>Steam Web API key</strong> below.
+            <strong>Don't use Collections?</strong> Paste a free <strong>Steam Web API
+            key</strong> to spin your <em>entire owned library</em>, including
+            uninstalled games.
           </div>
           <a href="#" id="welcome-key-link" class="settings-link">
             Get a free key in ~30s → steamcommunity.com/dev/apikey
           </a>
           <div class="welcome-key-help">
-            Sign in, enter any domain (e.g. <em>localhost</em>), agree, and copy the key.
-            Tip: you can <strong>right-click the box → Paste</strong>.
+            Sign in, enter any domain (e.g. <em>localhost</em>), agree, copy the key.
+            Tip: <strong>right-click the box → Paste</strong>.
           </div>
           <div class="steam-key-row">
             <input type="password" id="welcome-key-input" class="steam-key-input"
                    placeholder="Paste your 32-character key (optional)"
                    autocomplete="off" spellcheck="false">
-            <button class="btn-primary btn-sm" id="welcome-key-save">Save</button>
           </div>
           <div class="steam-key-status" id="welcome-key-status"></div>
         </div>
 
-        <div class="welcome-actions">
-          <button class="btn-primary" id="welcome-continue">Continue to my library</button>
+        <!-- Step: Epic -->
+        <div class="wz-panel hidden" data-step="epic">
+          <div class="welcome-section-title">Epic Games</div>
+          <p>Your Epic library is read through <strong>GOG Galaxy</strong> if you have it.
+            No Galaxy? Connect your Epic account directly.</p>
+          <div class="epic-connection-row" style="margin:12px 0;">
+            <span class="epic-connection-status" id="wz-epic-status">Using GOG Galaxy (default)</span>
+            <button class="btn-primary btn-sm" id="wz-epic-connect">Connect Epic Account</button>
+          </div>
+          <label class="dedup-toggle" style="margin-top:6px;">
+            <input type="checkbox" id="wz-epic-merge">
+            <span>Show Epic games in the <strong>GOG tab</strong> instead of their own
+              <span class="epic-source-sub">Good if you only have a few Epic games — they join the GOG pool.</span>
+            </span>
+          </label>
+        </div>
+
+        <!-- Step: cross-platform duplicates -->
+        <div class="wz-panel hidden" data-step="dedup">
+          <div class="welcome-section-title">Hide duplicate games</div>
+          <p>Own the same game on more than one launcher? Hide the copies so it only
+            shows up once.</p>
+          <label class="dedup-toggle" style="margin-top:8px;">
+            <input type="checkbox" id="wz-dedup">
+            <span>Hide duplicate games across platforms</span>
+          </label>
+          <p class="welcome-key-help">You can choose which launcher "wins" in
+            <strong>Settings → Cross-platform Duplicates</strong>.</p>
+        </div>
+
+        <!-- Step: editions -->
+        <div class="wz-panel hidden" data-step="edition">
+          <div class="welcome-section-title">Special editions</div>
+          <p>When you own multiple editions of the same game (e.g. <em>Mass Effect</em>
+            vs <em>Mass Effect Legendary Edition</em>):</p>
+          <div class="edition-pref-options">
+            <label class="edition-pref-option">
+              <input type="radio" name="wz-edition" value="both" checked>
+              <div><div class="edition-pref-title">Show both</div></div>
+            </label>
+            <label class="edition-pref-option">
+              <input type="radio" name="wz-edition" value="enhanced">
+              <div><div class="edition-pref-title">Prefer enhanced / remastered / GOTY</div></div>
+            </label>
+            <label class="edition-pref-option">
+              <input type="radio" name="wz-edition" value="original">
+              <div><div class="edition-pref-title">Prefer the original</div></div>
+            </label>
+          </div>
+        </div>
+
+        <!-- Step: done -->
+        <div class="wz-panel hidden" data-step="done">
+          <p class="welcome-lead">You're all set! 🎲</p>
+          <p>Pick a platform tab and hit <strong>SPIN</strong> — or try
+            <strong>Leave It To Fate</strong> to spin across everything at once.</p>
+          <p class="welcome-key-help">Everything here lives in <strong>Settings</strong>
+            (the ☰ menu) if you want to change it later.</p>
+        </div>
+
+        <div class="wizard-footer">
+          <button class="btn-ghost btn-sm" id="wz-back">&#8592; Back</button>
+          <div class="wizard-footer-right">
+            <button class="btn-ghost btn-sm" id="wz-skip">Skip this step</button>
+            <button class="btn-primary" id="wz-next">Continue</button>
+          </div>
         </div>
         <div class="welcome-footnote">
-          You can add or change this any time in <strong>Settings → Full Steam Library</strong>.
+          <a href="#" id="wz-skip-all" class="settings-link">Skip setup — I'll use Settings later</a>
         </div>
       </div>
     </div>

@@ -1006,13 +1006,6 @@ async function saveSteamKey() {
   }
 }
 
-async function saveWelcomeKey() {
-  const ok = await applySteamKey(
-    document.getElementById('welcome-key-input'),
-    document.getElementById('welcome-key-status'));
-  if (ok) reloadAfterLibraryChange();
-}
-
 async function clearSteamKey() {
   if (!api) return;
   await api.clear_steam_api_key();
@@ -1029,20 +1022,95 @@ function reloadAfterLibraryChange() {
   }
 }
 
-// ── First-run welcome ─────────────────────────────────────────────────────
+// ── First-run setup wizard ────────────────────────────────────────────────
+let wizardSteps = ['welcome'];
+let wizardIdx   = 0;
+
 async function maybeShowWelcome() {
   if (!api) return;
   try {
     const r = await api.get_onboarding_state();
-    if (r && r.status === 'ok' && !r.onboarded && r.steam_detected) {
-      document.getElementById('welcome-modal').classList.remove('hidden');
-    }
-  } catch (_) { /* never block startup on the welcome */ }
+    if (!r || r.status !== 'ok' || r.onboarded || !r.steam_detected) return;
+
+    // Build the step list from what's actually on this PC.
+    const p = await api.detect_platforms();
+    const launcherCount = ['steam', 'gog', 'epic', 'retroarch'].filter(k => p[k]).length;
+    wizardSteps = ['welcome'];
+    if (p.steam) wizardSteps.push('steam');
+    if (p.epic)  wizardSteps.push('epic');
+    if (launcherCount >= 2) wizardSteps.push('dedup');
+    wizardSteps.push('edition');
+    wizardSteps.push('done');
+
+    // Seed each step's controls with current settings.
+    try {
+      const [merge, dedup, edition] = await Promise.all([
+        api.get_epic_merge(), api.get_dedup_settings(), api.get_edition_preference(),
+      ]);
+      const em = document.getElementById('wz-epic-merge'); if (em) em.checked = !!merge.enabled;
+      const dd = document.getElementById('wz-dedup');      if (dd) dd.checked = !!dedup.enabled;
+      const pref = (edition && edition.preference) || 'both';
+      const er = document.querySelector(`input[name="wz-edition"][value="${pref}"]`);
+      if (er) er.checked = true;
+    } catch (_) {}
+
+    wizardIdx = 0;
+    showWizardStep(0);
+    document.getElementById('welcome-modal').classList.remove('hidden');
+  } catch (_) { /* never block startup on the wizard */ }
 }
 
-function dismissWelcome() {
+function showWizardStep(i) {
+  wizardIdx = i;
+  const step = wizardSteps[i];
+  document.querySelectorAll('#welcome-modal .wz-panel').forEach(panel => {
+    panel.classList.toggle('hidden', panel.dataset.step !== step);
+  });
+  // Footer / progress
+  document.getElementById('wz-back').style.visibility = i > 0 ? 'visible' : 'hidden';
+  const isLast = i === wizardSteps.length - 1;
+  document.getElementById('wz-skip').style.display = isLast ? 'none' : '';
+  const next = document.getElementById('wz-next');
+  next.textContent = isLast ? 'Finish' : (step === 'steam' ? 'Save & continue' : 'Continue');
+  document.getElementById('wz-progress').textContent = `${i + 1} / ${wizardSteps.length}`;
+}
+
+async function wizardNext() {
+  const step = wizardSteps[wizardIdx];
+  // Apply the current step's choice.
+  if (step === 'steam') {
+    const input = document.getElementById('welcome-key-input');
+    if (input && input.value.trim()) {
+      const ok = await applySteamKey(input, document.getElementById('welcome-key-status'));
+      if (!ok) return;            // bad key — stay so they can fix/clear it
+      reloadAfterLibraryChange();
+    }
+  } else if (step === 'epic') {
+    const em = document.getElementById('wz-epic-merge');
+    if (em) { await api.set_epic_merge(em.checked); epicMergedIntoGog = em.checked; }
+  } else if (step === 'dedup') {
+    const dd = document.getElementById('wz-dedup');
+    if (dd) { const s = await api.get_dedup_settings(); await api.set_dedup_settings(dd.checked, s.priority); invalidateAllExcludes(); }
+  } else if (step === 'edition') {
+    const er = document.querySelector('input[name="wz-edition"]:checked');
+    if (er) { await api.set_edition_preference(er.value); invalidateEditionCache(); }
+  }
+  if (wizardIdx >= wizardSteps.length - 1) finishWizard();
+  else showWizardStep(wizardIdx + 1);
+}
+
+function wizardSkip() {
+  if (wizardIdx >= wizardSteps.length - 1) finishWizard();
+  else showWizardStep(wizardIdx + 1);
+}
+function wizardBack() { if (wizardIdx > 0) showWizardStep(wizardIdx - 1); }
+
+async function finishWizard() {
   document.getElementById('welcome-modal').classList.add('hidden');
-  if (api) api.dismiss_onboarding();
+  if (api) await api.dismiss_onboarding();
+  // Apply any tab/visibility changes (e.g. Epic merged into GOG) and re-render.
+  await refreshLauncherVisibility();
+  if (currentPlatform === 'steam') reloadAfterLibraryChange();
 }
 
 // ── Right-click "Paste" for text fields ───────────────────────────────────
@@ -2847,16 +2915,21 @@ async function init() {
     if (api) api.open_external_url('https://steamcommunity.com/dev/apikey');
   });
 
-  // First-run welcome modal
-  document.getElementById('welcome-continue').addEventListener('click', dismissWelcome);
-  document.getElementById('welcome-key-save').addEventListener('click', saveWelcomeKey);
+  // First-run setup wizard
+  document.getElementById('wz-next').addEventListener('click', wizardNext);
+  document.getElementById('wz-skip').addEventListener('click', wizardSkip);
+  document.getElementById('wz-back').addEventListener('click', wizardBack);
+  document.getElementById('wz-skip-all').addEventListener('click', (e) => {
+    e.preventDefault(); finishWizard();
+  });
   document.getElementById('welcome-key-input').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') saveWelcomeKey();
+    if (e.key === 'Enter') wizardNext();
   });
   document.getElementById('welcome-key-link').addEventListener('click', (e) => {
     e.preventDefault();
     if (api) api.open_external_url('https://steamcommunity.com/dev/apikey');
   });
+  document.getElementById('wz-epic-connect').addEventListener('click', openEpicAuthModal);
 
   // Right-click → Paste on text fields
   setupPasteMenu();

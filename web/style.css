@@ -1119,6 +1119,24 @@ button:active { opacity: 0.8; }
   margin-top: 14px; text-align: center;
   font-size: 0.76rem; color: var(--muted);
 }
+.welcome-footnote a { color: var(--muted); }
+.welcome-footnote a:hover { color: var(--accent-hi); }
+
+/* ── Setup wizard ─────────────────────────────────────────────────────── */
+.wz-progress {
+  font-size: 0.78rem; color: var(--muted); font-weight: 600;
+  margin-left: auto; letter-spacing: 0.04em;
+}
+.wz-panel { min-height: 210px; }
+.wz-panel p { font-size: 0.86rem; color: var(--muted); line-height: 1.55; margin: 0 0 12px; }
+.wz-panel .edition-pref-options { margin-top: 10px; }
+.wizard-footer {
+  display: flex; align-items: center; gap: 10px;
+  margin-top: 18px; padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.wizard-footer-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.wizard-footer .btn-primary { padding: 9px 22px; }
 
 /* ── Per-launcher account connection status ──────────────────────────── */
 .conn-status-list {
