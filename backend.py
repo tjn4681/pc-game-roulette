@@ -19,6 +19,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import winreg
 
@@ -459,6 +460,27 @@ def fetch_name_from_api(appid):
     return None
 
 
+def search_steam_store(term, timeout=8):
+    """Search the Steam store by title.  Returns [(appid:int, name:str), ...].
+
+    No API key.  Used to resolve a cross-platform game's Steam appid from its
+    name — the reverse of fetch_name_from_api (which goes appid -> name)."""
+    url = ("https://store.steampowered.com/api/storesearch/?"
+           + urllib.parse.urlencode({"term": term, "cc": "us", "l": "en"}))
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return []
+    out = []
+    for it in (data.get("items") or []):
+        aid, nm = it.get("id"), it.get("name")
+        if isinstance(aid, int) and nm:
+            out.append((aid, nm))
+    return out
+
+
 def fetch_name_from_steamspy(appid):
     """SteamSpy fallback — works for old/delisted games the store API misses."""
     url = f"https://steamspy.com/api.php?request=appdetails&appid={appid}"
@@ -554,6 +576,41 @@ def save_name_cache(cache):
                     os.remove(tmp)
             except OSError:
                 pass
+
+
+# ── Cross-platform "already searched" cache ──────────────────────────────────
+# Normalized GOG/Epic titles we've already looked up on the Steam store, with a
+# timestamp.  Lets the reverse-search skip titles it has seen — both the ones
+# that matched (now in the name cache) and the GOG-exclusive ones that didn't —
+# instead of re-searching the whole library on every launch.  TTL'd so a game
+# you later buy on Steam still gets re-checked.
+_XPLAT_SEARCHED = os.path.join(CACHE_DIR, "xplat_searched.json")
+_XPLAT_SEARCH_TTL = 21 * 86400   # 3 weeks
+
+
+def load_xplat_searched():
+    try:
+        with open(_XPLAT_SEARCHED, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        cutoff = time.time() - _XPLAT_SEARCH_TTL
+        return {k: v for k, v in data.items() if isinstance(v, (int, float)) and v >= cutoff}
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return {}
+
+
+def save_xplat_searched(d):
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    tmp = _XPLAT_SEARCHED + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False)
+        os.replace(tmp, _XPLAT_SEARCHED)
+    except OSError:
+        try:
+            if os.path.isfile(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
 
 
 # ── Playtime parser (localconfig.vdf) ─────────────────────────────────────────
@@ -1222,6 +1279,8 @@ class SteamRouletteAPI:
         self._name_warmer_thread  = None
         self._steam_bulk_lock     = threading.Lock()
         self._steam_bulk_thread   = None
+        self._xplat_lock          = threading.Lock()
+        self._xplat_thread        = None
         # RetroArch (lazy): install dir + parsed playlists + id->game index
         self._retroarch_dir       = None
         self._ra_dir_checked      = False  # True once we've scanned (found or not)
@@ -1340,6 +1399,72 @@ class SteamRouletteAPI:
             t = threading.Thread(target=_worker, name="steam-bulk-warmer",
                                  daemon=True)
             self._steam_bulk_thread = t
+            t.start()
+
+    # ── Targeted cross-platform name resolver ─────────────────────────────
+    def _start_xplat_name_resolver(self, candidate_names, owned_appids):
+        """Resolve the Steam names needed for cross-platform dedup by searching
+        the Steam store for each *unmatched* GOG/Epic title and caching the name
+        of any returned appid the user actually owns.
+
+        This is far faster to converge than the per-appid forward warmer: it's
+        bounded by the GOG/Epic library (and only the titles not already
+        matched), and it goes straight at the dedup-relevant games instead of
+        resolving the entire Steam library.  Once a name lands in the cache the
+        normal dedup pass catches the duplicate, with correct priority.
+
+        Background daemon; polite (delay + cap)."""
+        with self._xplat_lock:
+            if self._xplat_thread and self._xplat_thread.is_alive():
+                return
+            todo  = list(dict.fromkeys(candidate_names))   # de-dupe, keep order
+            owned = set(owned_appids)
+
+            def _worker():
+                DELAY_SEC = 0.30
+                MAX_PER_RUN = 600
+                resolved = {}
+                existing = load_name_cache()
+                searched = load_xplat_searched()
+                searched_dirty = False
+                done = 0
+                for name in todo:
+                    if done >= MAX_PER_RUN:
+                        break
+                    target = normalize_title(name)
+                    if not target or target in searched:
+                        continue   # blank, or already looked up recently
+                    done += 1
+                    try:
+                        results = search_steam_store(name)
+                    except Exception:
+                        results = []
+                    for aid, sname in results:
+                        # Only cache an owned appid whose name actually matches —
+                        # never pollute the cache with a wrong/unowned game.
+                        if (aid in owned
+                                and str(aid) not in existing
+                                and normalize_title(sname) == target):
+                            resolved[str(aid)] = sname
+                    # Remember we searched this title so GOG-exclusive games
+                    # aren't re-searched on every launch.
+                    searched[target] = time.time()
+                    searched_dirty = True
+                    if len(resolved) >= 15:
+                        self._merge_names_into_cache(resolved)
+                        resolved = {}
+                    if searched_dirty and done % 25 == 0:
+                        save_xplat_searched(searched)
+                        searched_dirty = False
+                    time.sleep(DELAY_SEC)
+                if resolved:
+                    self._merge_names_into_cache(resolved)
+                if searched_dirty:
+                    save_xplat_searched(searched)
+
+            t = threading.Thread(target=_worker, name="xplat-resolver",
+                                 daemon=True)
+            self._xplat_thread = t
             t.start()
 
     # ── Collection loading ────────────────────────────────────────────────
@@ -2592,6 +2717,29 @@ class SteamRouletteAPI:
             "origin":    orig_games,
             "uplay":     uply_games,
         }, priority)
+
+        # Targeted cross-platform resolution: for every GOG/Epic title whose
+        # normalized name doesn't already match a *resolved* Steam game, search
+        # the Steam store by name in the background and cache the name of any
+        # owned appid that matches.  This catches owned-but-unresolved Steam
+        # twins (e.g. recent re-releases not in the SteamSpy dump) in roughly
+        # one pass — bounded by the GOG/Epic library — instead of waiting for
+        # the per-appid warmer to crawl the whole Steam library.
+        steam_norms = {normalize_title(g["name"]) for g in steam_games if g.get("name")}
+        already_searched = load_xplat_searched()
+        xplat_candidates = []
+        seen_norm = set()
+        for g in (gog_native + bnet_games + orig_games + uply_games + epic_list):
+            nm = g.get("name")
+            if not nm:
+                continue
+            n = normalize_title(nm)
+            if (n and n not in steam_norms and n not in seen_norm
+                    and n not in already_searched):
+                seen_norm.add(n)
+                xplat_candidates.append(nm)
+        if xplat_candidates:
+            self._start_xplat_name_resolver(xplat_candidates, steam_appids)
 
         out = {"status": "ok"}
         counts = {}
