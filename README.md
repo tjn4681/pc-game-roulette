@@ -16,8 +16,15 @@ A single, portable Windows app. No account sign-up required to get started.
    **`PC-Game-Roulette-Setup.exe`**.
 2. Run it. Windows may show a blue **"Windows protected your PC"** screen,
    because the app isn't code-signed (a certificate costs money and this is a
-   hobby project). Click **More info → Run anyway**. Some antivirus may also
-   flag it — that's a common false positive for small indie apps.
+   hobby project). Click **More info → Run anyway**.
+   - **Antivirus may flag it as a false positive** (e.g. Malwarebytes reporting
+     a generic `Malware.AI.*` verdict). This is a known quirk of apps built with
+     **PyInstaller** — the single-exe bootloader that unpacks the app at launch
+     looks, to a heuristic scanner, like the self-extracting behavior some
+     malware uses. There is no actual malware here; the full source is in this
+     repo and you can build the exe yourself (see *Building from source*). If
+     your AV quarantines it, choose **Restore / Allow** for the file, and
+     consider reporting the false positive to your AV vendor so they whitelist it.
 3. Follow the wizard. It installs **per-user** (no admin/UAC prompt) and sets up
    the **Microsoft Edge WebView2 runtime** automatically if you don't already
    have it (most up-to-date Windows 10/11 PCs do).
