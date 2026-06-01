@@ -2914,6 +2914,10 @@ async function init() {
     e.preventDefault();
     if (api) api.open_external_url('https://steamcommunity.com/dev/apikey');
   });
+  document.getElementById('steam-guard-link').addEventListener('click', (e) => {
+    e.preventDefault();
+    if (api) api.open_external_url('https://help.steampowered.com/en/faqs/view/06B0-26E6-2CF8-254C');
+  });
 
   // First-run setup wizard
   document.getElementById('wz-next').addEventListener('click', wizardNext);
@@ -2928,6 +2932,10 @@ async function init() {
   document.getElementById('welcome-key-link').addEventListener('click', (e) => {
     e.preventDefault();
     if (api) api.open_external_url('https://steamcommunity.com/dev/apikey');
+  });
+  document.getElementById('welcome-guard-link').addEventListener('click', (e) => {
+    e.preventDefault();
+    if (api) api.open_external_url('https://help.steampowered.com/en/faqs/view/06B0-26E6-2CF8-254C');
   });
   document.getElementById('wz-epic-connect').addEventListener('click', openEpicAuthModal);
 

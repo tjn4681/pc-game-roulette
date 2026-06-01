@@ -61,6 +61,12 @@ into Steam **Collections** (the categories in Steam's library sidebar).
   Steam profile's *Game details* must be set to **Public** for it to read your
   library (Steam → Profile → Edit → Privacy).
 
+  > **Steam Guard required.** Steam only issues API keys to accounts with
+  > **Steam Guard** enabled. Most accounts already have it on. If the key page
+  > won't let you in, turn Steam Guard on (Steam → Settings → Security, or the
+  > Steam Mobile app), then go back. There's nothing the app can do here — it's
+  > a Steam account-security requirement on their side.
+
 ### Getting your full Epic library
 
 - **With GOG Galaxy** + the Epic integration: your full library shows
