@@ -24,6 +24,11 @@ a = Analysis(
     # so a refactor can't silently drop one from the build.
     hiddenimports=[
         'backend', 'retroarch', 'epic_auth', 'epic_api', 'steam_names',
+        'steam_api',
+        # Modules split out of backend.py — reached via the import graph, but
+        # listed so a refactor can't silently drop one from the build.
+        'appconfig', 'steam_library', 'game_titles', 'dedup', 'game_names',
+        'images', 'galaxy',
     ],
     hookspath=[],
     hooksconfig={},
