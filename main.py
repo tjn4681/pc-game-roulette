@@ -4,9 +4,7 @@ Launches the pywebview window and wires up the Python js_api.
 """
 
 import ctypes
-import hashlib
 import os
-import shutil
 import sys
 import webview
 from backend import SteamRouletteAPI, CACHE_DIR
@@ -29,6 +27,12 @@ ICON_PATH  = os.path.join(_resource_dir(), "app.ico")
 # runs instead of the network.  Shares backend's data dir (per-user
 # %LOCALAPPDATA% when installed, or the source tree in dev) so there's a single
 # source of truth for where writable data lives.
+#
+# We don't need to manually evict the cache when the frontend changes: pywebview
+# serves the app's own HTML/JS/CSS through its bundled HTTP server with
+# 'Cache-Control: no-store', so WebView2 always re-fetches the shell fresh.
+# Only the remote CDN game art (which sends its own cacheable headers) persists
+# across launches — exactly the split we want.
 PROFILE_DIR = os.path.join(CACHE_DIR, "webview")
 
 # Unique AppUserModelID so Windows groups our window under the custom icon in
@@ -46,48 +50,6 @@ def _set_taskbar_icon():
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
     except AttributeError:
         pass   # Not on Windows (shouldn't happen, but be defensive)
-
-
-def _web_fingerprint():
-    """Fingerprint the bundled web/ assets (size + mtime of every html/js/css).
-    Changes whenever the app's frontend is edited or updated."""
-    parts = []
-    for root, _, files in os.walk(WEB_DIR):
-        for fn in sorted(files):
-            if fn.lower().endswith((".html", ".js", ".css")):
-                fp = os.path.join(root, fn)
-                try:
-                    st = os.stat(fp)
-                    parts.append(f"{os.path.relpath(fp, WEB_DIR)}:{st.st_size}:{int(st.st_mtime)}")
-                except OSError:
-                    pass
-    return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
-
-
-def _sync_profile_cache():
-    """Clear WebView2's HTTP cache whenever the web/ assets change.
-
-    The persistent profile caches everything WebView2 fetches — including the
-    app's own HTML/JS/CSS served from the local bottle server.  Without this,
-    a code change or app update would keep serving the stale shell from cache.
-    We only wipe when the fingerprint changes, so CDN game art stays cached
-    across normal (unchanged) launches.
-    """
-    marker = os.path.join(PROFILE_DIR, ".shell_fingerprint")
-    current = _web_fingerprint()
-    try:
-        previous = ""
-        if os.path.isfile(marker):
-            with open(marker, "r", encoding="utf-8") as f:
-                previous = f.read().strip()
-        if previous != current:
-            default = os.path.join(PROFILE_DIR, "EBWebView", "Default")
-            for sub in ("Cache", "Code Cache", "GPUCache"):
-                shutil.rmtree(os.path.join(default, sub), ignore_errors=True)
-            with open(marker, "w", encoding="utf-8") as f:
-                f.write(current)
-    except OSError:
-        pass
 
 
 def main():
@@ -123,7 +85,6 @@ def main():
     # default ephemeral profile.
     try:
         os.makedirs(PROFILE_DIR, exist_ok=True)
-        _sync_profile_cache()   # drop cache if the frontend changed
         start_kwargs["private_mode"] = False
         start_kwargs["storage_path"] = PROFILE_DIR
     except OSError:
