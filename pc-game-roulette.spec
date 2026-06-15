@@ -27,8 +27,11 @@ a = Analysis(
         'steam_api',
         # Modules split out of backend.py — reached via the import graph, but
         # listed so a refactor can't silently drop one from the build.
-        'appconfig', 'steam_library', 'game_titles', 'dedup', 'game_names',
-        'images', 'galaxy',
+        'appconfig', 'platforms', 'steam_library', 'game_titles', 'dedup',
+        'game_names', 'images', 'galaxy',
+        # js_api mixins combined by backend.SteamRouletteAPI.
+        'debug_mixin', 'names_mixin', 'gogepic_mixin', 'retroarch_mixin',
+        'filters_mixin', 'launchstatus_mixin', 'steam_mixin', 'settings_mixin',
     ],
     hookspath=[],
     hooksconfig={},
