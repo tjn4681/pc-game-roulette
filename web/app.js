@@ -195,10 +195,15 @@ async function renderCollections(collections, shortcutAppids, hiddenList) {
   let allAppIds = [...new Set([...wholeBase, ...allShortcutAppids])];
 
   if (allAppIds.length > 0 && !hiddenSet.has('Whole Library')) {
-    grid.appendChild(makeCollCard(
+    const libCard = makeCollCard(
       { name: 'Whole Library', count: allAppIds.length, appids: allAppIds },
       'library'
-    ));
+    );
+    // With no custom collections the lone card leaves the grid mostly empty —
+    // promote it to a full-width horizontal hero so it fills the row instead of
+    // hugging the left edge.
+    if (!filteredColls.length) libCard.classList.add('coll-card-hero');
+    grid.appendChild(libCard);
   }
 
   if (allShortcutAppids.length > 0 && !hiddenSet.has('Non-Steam Shortcuts')) {

@@ -98,6 +98,8 @@ button:active { opacity: 0.8; }
   padding: 16px;
   display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 10px; overflow-y: auto; flex: 1;
+  align-content: start;   /* pack rows at the top so a lone card keeps its
+                             natural height instead of stretching to fill */
 }
 .coll-card {
   background: var(--surface); border: 1px solid var(--border);
@@ -360,6 +362,37 @@ button:active { opacity: 0.8; }
 }
 .coll-card-library .coll-name { color: var(--accent-hi); }
 .coll-card-library:hover { border-color: var(--accent-hi); background: var(--surface2); }
+
+/* Hero variant: when "Whole Library" is the only card (API key but no custom
+   collections), span the full grid width as a horizontal banner so it doesn't
+   strand a tiny card against a wall of empty space. */
+.coll-card-hero {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas: "name cta" "count cta";
+  align-items: center;
+  column-gap: 24px;
+  padding: 26px 30px;
+}
+.coll-card-hero .coll-name  { grid-area: name;  font-size: 1.5rem; line-height: 1.2; }
+.coll-card-hero .coll-count { grid-area: count; font-size: 1rem; margin-top: 4px; }
+.coll-card-hero::after {
+  grid-area: cta;
+  content: "Spin \25B8";          /* ▸ */
+  align-self: center;
+  font-size: 1.1rem; font-weight: 600;
+  color: var(--accent-hi);
+  border: 1px solid rgba(76, 155, 232, 0.45);
+  border-radius: 999px;
+  padding: 8px 18px;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s;
+}
+.coll-card-hero:hover::after {
+  background: rgba(76, 155, 232, 0.16);
+  border-color: var(--accent-hi);
+}
 
 /* ── Non-Steam Shortcuts card (also pinned, distinguished by green tint) ─ */
 .coll-card-shortcuts {
