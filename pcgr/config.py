@@ -27,7 +27,10 @@ def _data_dir():
     Portable escape hatch: drop an empty 'portable.flag' file next to the .exe
     and data is stored beside it instead (e.g. for a USB-stick copy)."""
     if not getattr(sys, "frozen", False):
-        return os.path.dirname(os.path.abspath(__file__))
+        # Source tree: this module lives in pcgr/, so the project root — where
+        # cache/ and config.json have always lived (and are gitignored) — is one
+        # level up.
+        return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     exe_dir = os.path.dirname(sys.executable)
     if os.path.isfile(os.path.join(exe_dir, "portable.flag")):
         return exe_dir

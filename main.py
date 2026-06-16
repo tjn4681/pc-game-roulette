@@ -7,8 +7,7 @@ import ctypes
 import os
 import sys
 import webview
-from appconfig import CACHE_DIR
-from backend import SteamRouletteAPI
+from pcgr import CACHE_DIR, SteamRouletteAPI
 
 
 def _resource_dir():

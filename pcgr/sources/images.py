@@ -12,7 +12,7 @@ import os
 import urllib.error
 import urllib.request
 
-from appconfig import ART_CACHE_DIR
+from pcgr.config import ART_CACHE_DIR
 
 _JPEG_MAGIC = b"\xff\xd8\xff"
 _PNG_MAGIC  = b"\x89PNG\r\n\x1a\n"

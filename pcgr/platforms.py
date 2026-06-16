@@ -10,7 +10,7 @@ back onto the class that combines them.
 import os
 import winreg
 
-from appconfig import _PROGRAM_DATA
+from pcgr.config import _PROGRAM_DATA
 
 
 # Single source of truth for which launchers we support and the metadata each

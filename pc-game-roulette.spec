@@ -20,18 +20,22 @@ a = Analysis(
         ('web', 'web'),
         ('app.ico', '.'),
     ],
-    # Local modules are reached via the import graph, but list them explicitly
-    # so a refactor can't silently drop one from the build.
+    # The pcgr package is reached via the import graph, but list its modules
+    # explicitly so a refactor can't silently drop one from the build.
     hiddenimports=[
-        'backend', 'retroarch', 'epic_auth', 'epic_api', 'steam_names',
-        'steam_api',
-        # Modules split out of backend.py — reached via the import graph, but
-        # listed so a refactor can't silently drop one from the build.
-        'appconfig', 'platforms', 'steam_library', 'game_titles', 'dedup',
-        'game_names', 'images', 'galaxy',
-        # js_api mixins combined by backend.SteamRouletteAPI.
-        'debug_mixin', 'names_mixin', 'gogepic_mixin', 'retroarch_mixin',
-        'filters_mixin', 'launchstatus_mixin', 'steam_mixin', 'settings_mixin',
+        'pcgr', 'pcgr.api', 'pcgr.config', 'pcgr.platforms', 'pcgr.titles',
+        'pcgr.dedup',
+        # launchers (behind the common Launcher interface)
+        'pcgr.launchers', 'pcgr.launchers.base', 'pcgr.launchers.steam',
+        'pcgr.launchers.gog', 'pcgr.launchers.epic', 'pcgr.launchers.retroarch',
+        # cross-cutting services
+        'pcgr.services', 'pcgr.services.names', 'pcgr.services.art',
+        'pcgr.services.filters',
+        # stateless low-level sources
+        'pcgr.sources', 'pcgr.sources.steam_files', 'pcgr.sources.galaxy',
+        'pcgr.sources.store', 'pcgr.sources.images', 'pcgr.sources.retroarch',
+        'pcgr.sources.epic_auth', 'pcgr.sources.epic_api', 'pcgr.sources.steam_api',
+        'pcgr.sources.steam_names',
     ],
     hookspath=[],
     hooksconfig={},

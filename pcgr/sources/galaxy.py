@@ -19,7 +19,7 @@ import json
 import os
 import sqlite3
 
-from appconfig import GOG_GALAXY_DB
+from pcgr.config import GOG_GALAXY_DB
 
 
 def _galaxy_db_open():
@@ -32,6 +32,46 @@ def _galaxy_db_open():
         )
     except sqlite3.Error:
         return None
+
+
+def tags_as_collections(prefixes):
+    """Group the user's Galaxy tags into pseudo-collections for the given
+    release-key prefixes (e.g. ``("gog", "battlenet", ...)``).  Returns the same
+    structure as Steam collections so the existing collection-card grid renders
+    them natively:
+
+        [{ "name": "JRPG", "count": 12, "appids": ["epic_<id>", ...] }, ...]
+
+    Empty list if Galaxy isn't installed or the user has no tags yet."""
+    conn = _galaxy_db_open()
+    if conn is None:
+        return []
+
+    tag_to_keys = {}
+    try:
+        cur = conn.cursor()
+        for prefix in prefixes:
+            cur.execute(
+                "SELECT releaseKey, tag FROM UserReleaseTags "
+                "WHERE releaseKey LIKE ? AND tag IS NOT NULL",
+                (f"{prefix}_%",),
+            )
+            for release_key, tag in cur.fetchall():
+                if not tag:
+                    continue
+                tag = tag.strip()
+                if not tag:
+                    continue
+                tag_to_keys.setdefault(tag, []).append(release_key)
+    except sqlite3.Error:
+        pass
+    finally:
+        conn.close()
+
+    return [
+        {"name": tag, "count": len(keys), "appids": sorted(set(keys))}
+        for tag, keys in sorted(tag_to_keys.items(), key=lambda kv: kv[0].lower())
+    ]
 
 
 def query_galaxy_enrichment(release_keys):

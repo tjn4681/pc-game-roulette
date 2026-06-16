@@ -1,25 +1,107 @@
 """
-RetroArchMixin for SteamRouletteAPI.
+RetroArch launcher.
 
-RetroArch support: locating the install, parsing playlists, serving
-downscaled box art over a local HTTP server, and launching games.
-
-Methods here run on the single js_api object via cooperative multiple
-inheritance, so they share instance state (self.*) set up in the core
-SteamRouletteAPI.__init__.
+Detects the RetroArch install, parses its system playlists, runs a small
+localhost server that streams downscaled box art by id, and launches ROMs via
+``retroarch.exe -L <core> <rom>``.  Owns all of its own caches (install dir,
+parsed playlists, id→game index, art-server port).
 """
 
 import hashlib
 import io
 import os
-import retroarch
 import threading
 
-from appconfig import CACHE_DIR, load_config, save_config
+from pcgr.config import CACHE_DIR, load_config, save_config
+from pcgr.sources import retroarch
+from pcgr.launchers.base import Launcher
 
 
-class RetroArchMixin:
-    # ── RetroArch ─────────────────────────────────────────────────────────
+class RetroArchLauncher(Launcher):
+    id = "retroarch"
+    name = "RetroArch"
+
+    def __init__(self):
+        self._retroarch_dir  = None
+        self._ra_dir_checked = False   # True once we've scanned (found or not)
+        self._ra_playlists   = None    # list of {name, system, count, games}
+        self._ra_index       = None    # {game_id: game dict}
+        self._ra_art_port    = None    # local boxart HTTP server port
+        self._ra_art_lock    = threading.Lock()
+
+    # ── Launcher interface ────────────────────────────────────────────────
+
+    def is_present(self) -> bool:
+        return bool(self._get_retroarch_dir())
+
+    def get_categories(self) -> dict:
+        """Lightweight grid data: one entry per system playlist (name, count,
+        and a sample game id whose boxart can back the card).  No per-game
+        payload, so this stays tiny even with a 10k-ROM library."""
+        playlists = self._ensure_retroarch()
+        if not self._get_retroarch_dir():
+            return {"status": "notfound",
+                    "message": "RetroArch not found on this PC."}
+        out = []
+        for pl in playlists:
+            sample = next((g["id"] for g in pl["games"] if g.get("thumb_path")), None)
+            out.append({"name": pl["name"], "system": pl["system"],
+                        "count": pl["count"], "sample_id": sample})
+        total = sum(pl["count"] for pl in playlists)
+        port = self._ensure_art_server()
+        art_base = f"http://127.0.0.1:{port}/ra" if port else None
+        return {"status": "ok", "total": total, "playlists": out,
+                "art_base": art_base}
+
+    def get_games(self, system=None) -> dict:
+        """Return trimmed game dicts for one system, or every system when
+        `system` is None (RetroArch Library card and Leave It To Fate)."""
+        playlists = self._ensure_retroarch()
+        games = []
+        for pl in playlists:
+            if system is None or pl["system"] == system:
+                games.extend(self._ra_public(g) for g in pl["games"])
+        return {"status": "ok", "games": games}
+
+    def launch(self, game_id, **opts) -> dict:
+        """Launch a ROM: `retroarch.exe -L <core> <rom>`.  ROM + core are
+        resolved from the server-side index by id; -L is omitted if we
+        couldn't resolve a core (RetroArch then auto-picks one)."""
+        self._ensure_retroarch()
+        g = (self._ra_index or {}).get(game_id)
+        if not g:
+            return {"status": "error", "message": "Unknown RetroArch game."}
+        ra_dir = self._get_retroarch_dir() or ""
+        exe = os.path.join(ra_dir, "retroarch.exe")
+        if not os.path.isfile(exe):
+            return {"status": "error", "message": "retroarch.exe not found."}
+        rom  = g.get("rom_path")
+        core = g.get("core_path")
+        if not rom or not os.path.isfile(rom):
+            return {"status": "error", "message": "ROM file not found on disk."}
+        try:
+            import subprocess
+            args = [exe]
+            if core and os.path.isfile(core):
+                args += ["-L", core]
+            args.append(rom)
+            subprocess.Popen(args, cwd=ra_dir,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            return {"status": "ok"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    def reload(self) -> dict:
+        """Drop caches so the next call re-scans playlists (e.g. after the
+        user scans new ROMs in RetroArch).  Also re-arms install detection in
+        case RetroArch was installed after this session started."""
+        self._ra_playlists = None
+        self._ra_index = None
+        if not self._retroarch_dir:
+            self._ra_dir_checked = False
+        return self.get_categories()
+
+    # ── Internals ─────────────────────────────────────────────────────────
 
     def _get_retroarch_dir(self):
         """Locate (and cache) the RetroArch install dir, honouring a saved
@@ -43,7 +125,7 @@ class RetroArchMixin:
 
     def _ensure_retroarch(self):
         """Parse playlists once and build an id->game index.  Cached for the
-        process lifetime; reload_retroarch() refreshes it."""
+        process lifetime; reload() refreshes it."""
         if self._ra_playlists is not None:
             return self._ra_playlists
         d = self._get_retroarch_dir()
@@ -55,16 +137,6 @@ class RetroArchMixin:
         self._ra_playlists = playlists
         self._ra_index = index
         return playlists
-
-    def reload_retroarch(self):
-        """Drop caches so the next call re-scans playlists (e.g. after the
-        user scans new ROMs in RetroArch).  Also re-arms install detection in
-        case RetroArch was installed after this session started."""
-        self._ra_playlists = None
-        self._ra_index = None
-        if not self._retroarch_dir:
-            self._ra_dir_checked = False
-        return self.get_retroarch_playlists()
 
     @staticmethod
     def _ra_public(g):
@@ -78,35 +150,6 @@ class RetroArchMixin:
             "system":    g["system"],
             "has_thumb": bool(g.get("thumb_path")),
         }
-
-    def get_retroarch_playlists(self):
-        """Lightweight grid data: one entry per system playlist (name, count,
-        and a sample game id whose boxart can back the card).  No per-game
-        payload, so this stays tiny even with a 10k-ROM library."""
-        playlists = self._ensure_retroarch()
-        if not self._get_retroarch_dir():
-            return {"status": "notfound",
-                    "message": "RetroArch not found on this PC."}
-        out = []
-        for pl in playlists:
-            sample = next((g["id"] for g in pl["games"] if g.get("thumb_path")), None)
-            out.append({"name": pl["name"], "system": pl["system"],
-                        "count": pl["count"], "sample_id": sample})
-        total = sum(pl["count"] for pl in playlists)
-        port = self._ensure_art_server()
-        art_base = f"http://127.0.0.1:{port}/ra" if port else None
-        return {"status": "ok", "total": total, "playlists": out,
-                "art_base": art_base}
-
-    def get_retroarch_games(self, system=None):
-        """Return trimmed game dicts for one system, or every system when
-        `system` is None (RetroArch Library card and Leave It To Fate)."""
-        playlists = self._ensure_retroarch()
-        games = []
-        for pl in playlists:
-            if system is None or pl["system"] == system:
-                games.extend(self._ra_public(g) for g in pl["games"])
-        return {"status": "ok", "games": games}
 
     # Local boxart server ----------------------------------------------------
     # RetroArch boxarts are big PNGs (hundreds of KB) and a big library has
@@ -187,7 +230,7 @@ class RetroArchMixin:
                 return self._ra_art_port
             import http.server
             import socketserver
-            api = self
+            launcher = self
 
             class _Handler(http.server.BaseHTTPRequestHandler):
                 def log_message(self, *a):
@@ -199,10 +242,10 @@ class RetroArchMixin:
                         self.send_response(404); self.end_headers(); return
                     gid  = parts[1]
                     maxw = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
-                    g = (api._ra_index or {}).get(gid)
+                    g = (launcher._ra_index or {}).get(gid)
                     if not g or not g.get("thumb_path"):
                         self.send_response(404); self.end_headers(); return
-                    data, ctype = api._art_bytes(g["thumb_path"], maxw)
+                    data, ctype = launcher._art_bytes(g["thumb_path"], maxw)
                     if not data:
                         self.send_response(404); self.end_headers(); return
                     self.send_response(200)
@@ -236,31 +279,3 @@ class RetroArchMixin:
             threading.Thread(target=srv.serve_forever, daemon=True,
                              name="ra-art-server").start()
             return self._ra_art_port
-
-    def launch_retroarch_game(self, game_id):
-        """Launch a ROM: `retroarch.exe -L <core> <rom>`.  ROM + core are
-        resolved from the server-side index by id; -L is omitted if we
-        couldn't resolve a core (RetroArch then auto-picks one)."""
-        self._ensure_retroarch()
-        g = (self._ra_index or {}).get(game_id)
-        if not g:
-            return {"status": "error", "message": "Unknown RetroArch game."}
-        ra_dir = self._get_retroarch_dir() or ""
-        exe = os.path.join(ra_dir, "retroarch.exe")
-        if not os.path.isfile(exe):
-            return {"status": "error", "message": "retroarch.exe not found."}
-        rom  = g.get("rom_path")
-        core = g.get("core_path")
-        if not rom or not os.path.isfile(rom):
-            return {"status": "error", "message": "ROM file not found on disk."}
-        try:
-            import subprocess
-            args = [exe]
-            if core and os.path.isfile(core):
-                args += ["-L", core]
-            args.append(rom)
-            subprocess.Popen(args, cwd=ra_dir,
-                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            return {"status": "ok"}
-        except Exception as e:
-            return {"status": "error", "message": str(e)}

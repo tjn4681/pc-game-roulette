@@ -1,31 +1,52 @@
 """
-NameWarmingMixin for SteamRouletteAPI.
+Game-name & metadata resolution.
 
-Game-name resolution: the background name-warmer threads, Steam-name
-status, on-demand appid->name lookups, and HowLongToBeat data.
+Owns the background name-warmer threads (forward per-appid warming, the SteamSpy
+bulk cache, and the targeted cross-platform reverse-search), the bulk-name
+status the frontend shows before a dedup pass, and HowLongToBeat lookups.  All
+the warmer thread/lock state lives here rather than on the js_api object.
 
-Methods here run on the single js_api object via cooperative multiple
-inheritance, so they share instance state (self.*) set up in the core
-SteamRouletteAPI.__init__.
+Per-appid display-name resolution that needs Steam install state
+(`get_game_name`) lives on SteamLauncher, which uses this service's cache
+helpers.
 """
 
 import json
 import os
 import re
-import steam_names
 import threading
 import time
 
-from appconfig import CACHE_DIR, HLTB_CACHE
-from steam_library import lookup_acf_name
-from game_names import fetch_name_from_api, fetch_name_from_steamspy, load_name_cache, load_xplat_searched, save_name_cache, save_xplat_searched, search_steam_store
-from game_titles import normalize_title, _hltb_search_variants
+from pcgr.config import CACHE_DIR, HLTB_CACHE
+from pcgr.titles import normalize_title, _hltb_search_variants
+from pcgr.sources import steam_names
+from pcgr.sources.store import (
+    fetch_name_from_api, fetch_name_from_steamspy, load_name_cache,
+    load_xplat_searched, save_name_cache, save_xplat_searched, search_steam_store,
+)
 
 
-class NameWarmingMixin:
+class NameService:
+    """Resolves and caches game names / completion times, with non-blocking
+    background warmers so the loading path never stalls on the network."""
+
+    # Symbols Steam appends that confuse HLTB's similarity scorer
+    _TRADEMARK_RE = re.compile(r'[™®©℠]')
+    # Common subtitle separators — everything after these is stripped for the
+    # fallback search term (e.g. "Game Name: Subtitle" → "Game Name")
+    _SUBTITLE_RE  = re.compile(r'\s+[-–—:]\s+|\s+\(')
+
+    def __init__(self):
+        self._name_warmer_lock   = threading.Lock()
+        self._name_warmer_thread = None
+        self._steam_bulk_lock    = threading.Lock()
+        self._steam_bulk_thread  = None
+        self._xplat_lock         = threading.Lock()
+        self._xplat_thread       = None
+
     # ── Background name warmer ────────────────────────────────────────────
 
-    def _start_name_warmer(self, appids):
+    def start_name_warmer(self, appids):
         """Resolve missing Steam app names on a background daemon thread.
 
         Runs entirely off the UI path so startup is never blocked, and works
@@ -71,24 +92,24 @@ class NameWarmingMixin:
                         consec_empty += 1
                         if consec_empty >= COOLDOWN_AFTER:
                             if resolved:
-                                self._merge_names_into_cache(resolved)
+                                self.merge_into_cache(resolved)
                                 resolved = {}
                             time.sleep(COOLDOWN_SEC)
                             consec_empty = 0
                     # Flush periodically so progress isn't lost on a long run
                     if len(resolved) >= 25:
-                        self._merge_names_into_cache(resolved)
+                        self.merge_into_cache(resolved)
                         resolved = {}
                     time.sleep(DELAY_SEC)
                 if resolved:
-                    self._merge_names_into_cache(resolved)
+                    self.merge_into_cache(resolved)
 
             t = threading.Thread(target=_worker, name="name-warmer", daemon=True)
             self._name_warmer_thread = t
             t.start()
 
     @staticmethod
-    def _merge_names_into_cache(new_names):
+    def merge_into_cache(new_names):
         """Read-merge-write the on-disk name cache (atomic save handles
         locking).  Only adds keys that aren't already present."""
         if not new_names:
@@ -104,7 +125,7 @@ class NameWarmingMixin:
 
     # ── Bulk Steam names (SteamSpy) — non-blocking, stale-while-revalidate ──
 
-    def _bulk_steam_names(self):
+    def bulk_steam_names(self):
         """Return the bulk {appid: name} map WITHOUT ever blocking on the
         ~30s SteamSpy fetch.
 
@@ -116,10 +137,10 @@ class NameWarmingMixin:
         if names:
             return names
         stale = steam_names.load_cache_any_age(CACHE_DIR)
-        self._start_steam_bulk_warmer()
+        self.start_steam_bulk_warmer()
         return stale
 
-    def _start_steam_bulk_warmer(self):
+    def start_steam_bulk_warmer(self):
         """Fetch/refresh the SteamSpy bulk name cache on a background thread."""
         with self._steam_bulk_lock:
             if self._steam_bulk_thread and self._steam_bulk_thread.is_alive():
@@ -136,7 +157,7 @@ class NameWarmingMixin:
 
     # ── Targeted cross-platform name resolver ─────────────────────────────
 
-    def _start_xplat_name_resolver(self, candidate_names, owned_appids):
+    def start_xplat_name_resolver(self, candidate_names, owned_appids):
         """Resolve the Steam names needed for cross-platform dedup by searching
         the Steam store for each *unmatched* GOG/Epic title and caching the name
         of any returned appid the user actually owns.
@@ -185,14 +206,14 @@ class NameWarmingMixin:
                     searched[target] = time.time()
                     searched_dirty = True
                     if len(resolved) >= 15:
-                        self._merge_names_into_cache(resolved)
+                        self.merge_into_cache(resolved)
                         resolved = {}
                     if searched_dirty and done % 25 == 0:
                         save_xplat_searched(searched)
                         searched_dirty = False
                     time.sleep(DELAY_SEC)
                 if resolved:
-                    self._merge_names_into_cache(resolved)
+                    self.merge_into_cache(resolved)
                 if searched_dirty:
                     save_xplat_searched(searched)
 
@@ -220,63 +241,7 @@ class NameWarmingMixin:
         names = steam_names.get_steam_app_names(CACHE_DIR, force_refresh=True)
         return {"status": "ok", "count": len(names)}
 
-    # ── Game name resolution ──────────────────────────────────────────────
-
-    def get_game_name(self, appid_str):
-        """
-        Resolve a game's name. Resolution order:
-          1. Name cache (instant)
-          2. Local appmanifest .acf file (instant, no network)
-          3. Steam store API (network, ~1-2 s)
-        Result is cached to disk after any successful fetch.
-        """
-        try:
-            appid = int(appid_str)
-        except (ValueError, TypeError):
-            return {"status": "error", "name": f"App {appid_str}"}
-
-        key   = str(appid)
-        cache = load_name_cache()
-
-        if key in cache:
-            return {"status": "ok", "name": cache[key], "source": "cache",
-                    "playtime_minutes": self._playtimes.get(appid, 0)}
-
-        # Non-Steam shortcut?  Its real name lives in shortcuts.vdf — Steam's
-        # store API would have no idea what to do with the synthetic appid.
-        sc = self._shortcuts.get(appid)
-        if sc and sc.get("name"):
-            cache[key] = sc["name"]
-            save_name_cache(cache)
-            return {"status": "ok", "name": sc["name"], "source": "shortcut",
-                    "playtime_minutes": self._playtimes.get(appid, 0)}
-
-        # Try local .acf first (free, instant)
-        if self._steam_path:
-            name = lookup_acf_name(self._steam_path, appid)
-            if name:
-                cache[key] = name
-                save_name_cache(cache)
-                return {"status": "ok", "name": name, "source": "acf",
-                        "playtime_minutes": self._playtimes.get(appid, 0)}
-
-        # Try Steam store API, then SteamSpy for old/delisted games
-        name = fetch_name_from_api(appid) or fetch_name_from_steamspy(appid)
-        if not name:
-            name = f"App {appid}"
-
-        cache[key] = name
-        save_name_cache(cache)
-        return {"status": "ok", "name": name, "source": "api",
-                "playtime_minutes": self._playtimes.get(appid, 0)}
-
     # ── HowLongToBeat completion times ───────────────────────────────────
-
-    # Symbols Steam appends that confuse HLTB's similarity scorer
-    _TRADEMARK_RE = re.compile(r'[™®©℠]')
-    # Common subtitle separators — everything after these is stripped for the
-    # fallback search term (e.g. "Game Name: Subtitle" → "Game Name")
-    _SUBTITLE_RE  = re.compile(r'\s+[-–—:]\s+|\s+\(')
 
     def get_hltb_data(self, appid_str, game_name):
         """

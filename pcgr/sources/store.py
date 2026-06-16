@@ -20,7 +20,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from appconfig import CACHE_DIR, NAMES_CACHE
+from pcgr.config import CACHE_DIR, NAMES_CACHE
 
 
 # ── Steam store API + SteamSpy (name fallbacks) ──────────────────────────────

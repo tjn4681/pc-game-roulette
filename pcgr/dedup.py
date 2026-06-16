@@ -11,7 +11,7 @@ Both work by bucketing games on their normalized title (see game_titles), so
 all the fuzzy-matching smarts live in one place.
 """
 
-from game_titles import is_enhanced_edition, normalize_title
+from pcgr.titles import is_enhanced_edition, normalize_title
 
 
 def find_cross_platform_duplicates(games_by_platform, priority):

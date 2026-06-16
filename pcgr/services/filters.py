@@ -1,28 +1,31 @@
 """
-FiltersMixin for SteamRouletteAPI.
+Duplicate / edition filtering.
 
-Duplicate / edition filtering: the dedup and edition-preference settings
-and the filter sets the frontend applies to hide cross-platform and
-same-platform duplicate games.
-
-Methods here run on the single js_api object via cooperative multiple
-inheritance, so they share instance state (self.*) set up in the core
-SteamRouletteAPI.__init__.
+Computes which game ids the frontend should hide: cross-platform duplicates
+(the same game owned on a higher-priority launcher) and same-platform edition
+variants (Mass Effect vs Mass Effect Legendary Edition).  This is inherently a
+cross-launcher concern, so the service is composed with references to the
+launchers it reads (steam/gog/epic) and the name service that warms the Steam
+names dedup needs.
 """
 
-import epic_auth
-import steam_api
-
-from appconfig import CACHE_DIR, get_setting, set_setting
-from platforms import PLATFORMS, _GOG_INTEGRATED_PREFIXES
-from steam_library import scan_all_acf
-from game_names import load_name_cache, load_xplat_searched
-from game_titles import normalize_title
-from dedup import find_cross_platform_duplicates, find_same_platform_edition_dupes
+from pcgr.config import CACHE_DIR, get_setting, set_setting
+from pcgr.platforms import PLATFORMS, _GOG_INTEGRATED_PREFIXES
+from pcgr.sources.steam_files import scan_all_acf
+from pcgr.sources.store import load_name_cache, load_xplat_searched
+from pcgr.sources import epic_auth, steam_api
+from pcgr.titles import normalize_title
+from pcgr.dedup import find_cross_platform_duplicates, find_same_platform_edition_dupes
 
 
-class FiltersMixin:
-    # ── Cross-platform duplicate filtering ────────────────────────────────
+class FilterService:
+    def __init__(self, steam, gog, epic, names):
+        self.steam = steam
+        self.gog = gog
+        self.epic = epic
+        self.names = names
+
+    # ── Cross-platform duplicate settings ─────────────────────────────────
 
     def get_dedup_settings(self):
         """Return the user's cross-platform duplicate hide settings."""
@@ -86,7 +89,7 @@ class FiltersMixin:
         set_setting("edition_preference", preference)
         return {"status": "ok", "preference": preference}
 
-    def _apply_edition_preference(self, games):
+    def apply_edition_preference(self, games):
         """Strip same-game duplicates within the given list per the user's
         edition_preference setting.  Safe to call on any platform's games."""
         pref = get_setting("edition_preference", "both")
@@ -118,10 +121,10 @@ class FiltersMixin:
         # Non-blocking bulk lookup (stale-while-revalidate) so this never
         # stalls the UI on the SteamSpy fetch.
         steam_appids = set()
-        for ids in (self._collections or {}).values():
+        for ids in (self.steam.collections or {}).values():
             steam_appids.update(ids)
         name_cache = load_name_cache()
-        bulk_names = self._bulk_steam_names()
+        bulk_names = self.names.bulk_steam_names()
         def _name_for(a):
             return name_cache.get(str(a)) or bulk_names.get(str(a)) or ""
         steam_games = [
@@ -134,9 +137,9 @@ class FiltersMixin:
         per_platform_games = {
             "steam": steam_games,
             "gog":   (_gog_games if _gog_games is not None
-                      else self.get_gog_games().get("games", [])),
+                      else self.gog.get_games().get("games", [])),
             "epic":  (_epic_games if _epic_games is not None
-                      else self.get_epic_games().get("games", [])),
+                      else self.epic.get_games().get("games", [])),
         }
 
         out = {"status": "ok", "preference": pref}
@@ -174,13 +177,14 @@ class FiltersMixin:
         # Steam game (no custom collection) is invisible to the dedup
         # bucket and its GOG/Epic twin slips through.
         steam_appids = set()
-        for ids in (self._collections or {}).values():
+        for ids in (self.steam.collections or {}).values():
             steam_appids.update(ids)
 
         installed_steam = {}
-        if self._steam_path:
+        steam_path = self.steam.steam_path
+        if steam_path:
             try:
-                installed_steam = scan_all_acf(self._steam_path)
+                installed_steam = scan_all_acf(steam_path)
             except Exception:
                 installed_steam = {}
         steam_appids.update(installed_steam.keys())
@@ -193,7 +197,7 @@ class FiltersMixin:
         owned_names = {}
         _key = epic_auth.load_secret(CACHE_DIR, "steam_api_key")
         if _key:
-            _sid = self._steamid64()
+            _sid = self.steam._steamid64()
             _cached = steam_api.load_cache(CACHE_DIR, _sid) if _sid else None
             if _cached and _cached.get("status") == "ok":
                 for g in _cached.get("games", []):
@@ -201,7 +205,7 @@ class FiltersMixin:
                 steam_appids.update(owned_names.keys())
 
         name_cache = load_name_cache()
-        bulk_names = self._bulk_steam_names()
+        bulk_names = self.names.bulk_steam_names()
 
         # Resolve names from LOCAL sources only — cache, the SteamSpy bulk
         # dump (~30k titles), and installed appmanifests.  We deliberately do
@@ -236,14 +240,14 @@ class FiltersMixin:
         # the SteamSpy dump) on a later dedup computation without ever
         # stalling the UI.
         if unresolved:
-            self._start_name_warmer(unresolved)
+            self.names.start_name_warmer(unresolved)
 
         # Split GOG result by platform so integrated launchers are deduped
         # independently (not lumped under the 'gog' bucket)
         gog_all    = (_gog_games if _gog_games is not None
-                      else self.get_gog_games().get("games", []))
+                      else self.gog.get_games().get("games", []))
         epic_list  = (_epic_games if _epic_games is not None
-                      else self.get_epic_games().get("games", []))
+                      else self.epic.get_games().get("games", []))
         gog_native = [g for g in gog_all if g["platform"] == "gog"]
         bnet_games = [g for g in gog_all if g["platform"] == "battlenet"]
         orig_games = [g for g in gog_all if g["platform"] == "origin"]
@@ -279,7 +283,7 @@ class FiltersMixin:
                 seen_norm.add(n)
                 xplat_candidates.append(nm)
         if xplat_candidates:
-            self._start_xplat_name_resolver(xplat_candidates, steam_appids)
+            self.names.start_xplat_name_resolver(xplat_candidates, steam_appids)
 
         out = {"status": "ok"}
         counts = {}
@@ -300,8 +304,8 @@ class FiltersMixin:
         # When both are off (the default), this avoids a potentially slow
         # library fetch — e.g. a cold Epic OAuth call — on the loading path.
         if dedup_on or edition_on:
-            gog  = self.get_gog_games().get("games", [])
-            epic = self.get_epic_games().get("games", [])
+            gog  = self.gog.get_games().get("games", [])
+            epic = self.epic.get_games().get("games", [])
         else:
             gog, epic = [], []
         return {
