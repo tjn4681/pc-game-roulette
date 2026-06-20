@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -40,7 +41,6 @@ class TestBuildGenreBuckets(unittest.TestCase):
 class TestGenreCache(unittest.TestCase):
     def test_cache_round_trip_and_merge(self):
         import tempfile
-        from unittest import mock
 
         import pcgr.sources.store as store
         with tempfile.TemporaryDirectory() as d:
@@ -54,6 +54,31 @@ class TestGenreCache(unittest.TestCase):
                 got = store.load_genre_cache()
                 self.assertEqual(got["20"], ["RPG"])
                 self.assertEqual(got["10"], ["Action"])  # not overwritten
+
+
+class TestGenreService(unittest.TestCase):
+    def test_status_counts_cached_vs_pending(self):
+        from pcgr.services.genres import GenreService
+        svc = GenreService()
+        with mock.patch("pcgr.services.genres.load_genre_cache",
+                        return_value={"10": ["Action"], "20": []}):
+            with mock.patch.object(svc, "_warm"):
+                st = svc.status([10, 20, 30])
+        self.assertEqual(st["total"], 3)
+        self.assertEqual(st["categorized"], 2)
+        self.assertEqual(st["pending"], 1)
+
+    def test_get_buckets_uses_cache_and_curated_filter(self):
+        from pcgr.services.genres import GenreService
+        svc = GenreService()
+        cache = {"10": ["Action", "Indie"], "20": ["Action"]}
+        with mock.patch("pcgr.services.genres.load_genre_cache", return_value=cache):
+            with mock.patch.object(svc, "_warm"):
+                r = svc.get_buckets([10, 20])
+        self.assertEqual(r["status"], "ok")
+        names = [b["name"] for b in r["collections"]]
+        self.assertEqual(names, ["Action"])
+        self.assertEqual(r["collections"][0]["appids"], [10, 20])
 
 
 if __name__ == "__main__":
