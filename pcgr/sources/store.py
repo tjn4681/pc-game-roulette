@@ -188,6 +188,7 @@ def save_genre_cache(cache):
     with _GENRE_CACHE_LOCK:
         tmp = GENRES_CACHE + ".tmp"
         try:
+            os.makedirs(CACHE_DIR, exist_ok=True)
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(cache, f, ensure_ascii=False, indent=2)
             os.replace(tmp, GENRES_CACHE)

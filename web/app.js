@@ -3096,6 +3096,10 @@ async function init() {
     if (!api) return;
     await api.set_auto_collections_enabled(e.target.checked);
     autoCollectionsEnabled = e.target.checked;
+    // Re-render the Steam grid so genre cards appear/disappear immediately.
+    if (currentPlatform === 'steam') {
+      renderCollections(allCollections, allShortcutAppids, allHiddenCollections);
+    }
   });
 
   // Edition preference: any of the three radios
