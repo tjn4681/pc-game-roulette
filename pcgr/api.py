@@ -148,6 +148,8 @@ class SteamRouletteAPI:
         return self.filters.get_edition_filter(_gog_games, _epic_games)
     def get_duplicate_filter(self, _gog_games=None, _epic_games=None):
         return self.filters.get_duplicate_filter(_gog_games, _epic_games)
+    def get_playtime_filter(self, _gog_games=None, _epic_games=None):
+        return self.filters.get_playtime_filter(_gog_games, _epic_games)
     def get_all_filters(self):                 return self.filters.get_all_filters()
     def get_playtime_settings(self):           return self.filters.get_playtime_settings()
     def set_playtime_settings(self, enabled, max_hours):
