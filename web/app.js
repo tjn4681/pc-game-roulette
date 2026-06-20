@@ -973,6 +973,7 @@ async function openSettings() {
   renderSettings(r);
   await refreshEpicSettings();
   await refreshDedupSettings();
+  await refreshPlaytimeSettings();
   await refreshEditionPreference();
   await refreshSoundSettings();
   await refreshLauncherVisibility();
@@ -1363,6 +1364,15 @@ async function refreshEditionPreview() {
 
 const _PLATFORM_LABELS = { steam: 'Steam', gog: 'GOG', epic: 'Epic',
                             battlenet: 'Battle.net', origin: 'EA App', uplay: 'Ubisoft Connect' };
+
+async function refreshPlaytimeSettings() {
+  if (!api) return;
+  const s = await api.get_playtime_settings();
+  if (s.status !== 'ok') return;
+  document.getElementById('playtime-enabled').checked = !!s.enabled;
+  document.getElementById('playtime-hours').value =
+    (s.max_hours === null || s.max_hours === undefined) ? '' : s.max_hours;
+}
 
 async function refreshDedupSettings() {
   if (!api) return;
@@ -2996,6 +3006,17 @@ async function init() {
     // overlay-wrapped combined path (shows "Filtering…" if it takes a moment).
     invalidateAllExcludes();
   });
+
+  // Playtime filter: toggle + threshold input
+  async function _savePlaytime() {
+    if (!api) return;
+    const enabled = document.getElementById('playtime-enabled').checked;
+    const hours   = document.getElementById('playtime-hours').value;
+    await api.set_playtime_settings(enabled, hours);
+    invalidateAllExcludes();
+  }
+  document.getElementById('playtime-enabled').addEventListener('change', _savePlaytime);
+  document.getElementById('playtime-hours').addEventListener('change', _savePlaytime);
 
   // Edition preference: any of the three radios
   document.querySelectorAll('input[name="edition-pref"]').forEach(el => {

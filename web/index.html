@@ -394,6 +394,19 @@
         </label>
       </section>
       <section class="settings-section">
+        <h3>Playtime</h3>
+        <label class="dedup-toggle">
+          <input type="checkbox" id="playtime-enabled">
+          <span>Hide games I've played more than
+            <input type="number" id="playtime-hours" min="0" step="0.5"
+                   inputmode="decimal" style="width:64px;"> hours</span>
+        </label>
+        <div class="edition-pref-label" style="margin-top:6px;">
+          Applies to every spin, on any platform where playtime is known.
+          Set to <strong>0</strong> to spin only games you've never played.
+        </div>
+      </section>
+      <section class="settings-section">
         <h3>Edition Preference</h3>
         <div class="edition-pref-label">When you own multiple editions of the same game on the same platform (e.g. Mass Effect and Mass Effect Legendary Edition):</div>
         <div class="edition-pref-options">
