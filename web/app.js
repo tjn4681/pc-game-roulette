@@ -58,6 +58,7 @@ let collectionRoulettePlatform  = 'steam'; // 'steam' | 'gog' | 'epic'
 let dedupExcludes   = null;
 let editionExcludes = null;
 let playtimeExcludes = null;
+let autoCollectionsEnabled = false;
 
 // Parse a backend dedup/edition result into per-platform Sets.
 function _parseDedup(r) {
@@ -93,6 +94,14 @@ async function getPlaytimeExcludes() {
   if (!api) { playtimeExcludes = _parsePlaytime(null); return playtimeExcludes; }
   playtimeExcludes = _parsePlaytime(await api.get_playtime_filter());
   return playtimeExcludes;
+}
+
+async function refreshAutoCollectionsEnabled() {
+  if (!api) { autoCollectionsEnabled = false; return; }
+  try {
+    const r = await api.get_auto_collections_enabled();
+    autoCollectionsEnabled = !!(r && r.enabled);
+  } catch (_) { autoCollectionsEnabled = false; }
 }
 
 async function getDedupExcludes() {
@@ -239,8 +248,11 @@ async function renderCollections(collections, shortcutAppids, hiddenList) {
     // No custom collections.  We may still have a Whole Library (from the API
     // key) or shortcuts; only drop to the installed-only scan when there's
     // genuinely nothing else.
-    if (allAppIds.length === 0) loadInstalledLibrary(grid, empty);
-    else { empty.classList.add('hidden'); showScreen('screen-main'); }
+    if (allAppIds.length === 0) { loadInstalledLibrary(grid, empty); return; }
+    empty.classList.add('hidden');
+    showScreen('screen-main');
+    if (autoCollectionsEnabled) await renderAutoGenreCards(grid, allAppIds);
+    else appendAutoCollectionsCTA(grid, allAppIds);
     return;
   }
 
@@ -248,7 +260,49 @@ async function renderCollections(collections, shortcutAppids, hiddenList) {
   // Hide collections that ended up empty after dedup, otherwise render normally
   filteredColls.filter(c => c.count > 0)
                .forEach(c => grid.appendChild(makeCollCard(c, null)));
+  if (autoCollectionsEnabled) await renderAutoGenreCards(grid, allAppIds);
   showScreen('screen-main');
+}
+
+// Append genre auto-collection cards (and a progress note) to the Steam grid.
+// `allAppIds` is the library set the buckets are restricted to.
+async function renderAutoGenreCards(grid, allAppIds) {
+  if (!api || !allAppIds.length) return;
+  let r;
+  try { r = await api.get_auto_collections(allAppIds); } catch (_) { return; }
+  grid.querySelectorAll('.coll-card-genre').forEach(el => el.remove());
+  const old = document.getElementById('genre-progress');
+  if (old) old.remove();
+  (r && r.collections || []).forEach(c => grid.appendChild(makeCollCard(c, 'genre')));
+  // Progress note while the warmer is still resolving genres.
+  let st;
+  try { st = await api.get_auto_collection_status(allAppIds); } catch (_) { st = null; }
+  if (st && st.pending > 0) {
+    const note = document.createElement('div');
+    note.id = 'genre-progress';
+    note.className = 'genre-progress';
+    note.textContent = `Categorizing your library… ${st.categorized} of ${st.total} games`;
+    grid.appendChild(note);
+  }
+}
+
+// Opt-in call-to-action shown to no-collections users who haven't enabled the
+// feature yet.
+function appendAutoCollectionsCTA(grid, allAppIds) {
+  const card = document.createElement('div');
+  card.className = 'coll-card coll-card-autocta';
+  card.innerHTML = `
+    <div class="coll-name">Auto-organize by genre</div>
+    <div class="coll-count">Group your library into genre collections to spin</div>
+    <button class="btn-primary btn-sm" id="auto-cta-btn">Auto-organize</button>`;
+  card.querySelector('#auto-cta-btn').addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (!api) return;
+    await api.set_auto_collections_enabled(true);
+    autoCollectionsEnabled = true;
+    renderCollections(allCollections, allShortcutAppids, allHiddenCollections);
+  });
+  grid.appendChild(card);
 }
 
 function makeCollCard(collection, variant) {
@@ -256,6 +310,7 @@ function makeCollCard(collection, variant) {
   let classes = 'coll-card';
   if      (variant === 'library')   classes += ' coll-card-library';
   else if (variant === 'shortcuts') classes += ' coll-card-shortcuts';
+  else if (variant === 'genre')     classes += ' coll-card-genre';
   card.className = classes;
   const unitWord  = variant === 'shortcuts' ? 'shortcut' : 'game';
   const hideable  = true; // every card can be hidden; manage from Settings to un-hide
@@ -2860,6 +2915,7 @@ async function init() {
   if (_initRan) {
     if (window.pywebview && !api) {
       api = window.pywebview.api;
+      await refreshAutoCollectionsEnabled();
       handleLoadResult(await api.auto_load());
       loadUserInfo();
       maybeShowWelcome();
@@ -3097,6 +3153,7 @@ async function init() {
       return;
     }
 
+    await refreshAutoCollectionsEnabled();
     const result = await api.auto_load();
     if (result.status !== 'ok' && (detected.gog || detected.epic)) {
       // Steam isn't usable but the user has GOG or Epic — open the first
