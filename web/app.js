@@ -57,6 +57,7 @@ let collectionRoulettePlatform  = 'steam'; // 'steam' | 'gog' | 'epic'
 // filter helpers below — callers don't need to care WHY a game is hidden.
 let dedupExcludes   = null;
 let editionExcludes = null;
+let playtimeExcludes = null;
 
 // Parse a backend dedup/edition result into per-platform Sets.
 function _parseDedup(r) {
@@ -74,6 +75,24 @@ function _parseEdition(r) {
   return (r && r.status === 'ok')
     ? { steam: new Set(r.steam), gog: new Set(r.gog), epic: new Set(r.epic) }
     : { steam: new Set(), gog: new Set(), epic: new Set() };
+}
+function _parsePlaytime(r) {
+  return (r && r.status === 'ok')
+    ? { steam:     new Set(r.steam),
+        gog:       new Set(r.gog),
+        epic:      new Set(r.epic),
+        battlenet: new Set(r.battlenet || []),
+        origin:    new Set(r.origin    || []),
+        uplay:     new Set(r.uplay     || []) }
+    : { steam: new Set(), gog: new Set(), epic: new Set(),
+        battlenet: new Set(), origin: new Set(), uplay: new Set() };
+}
+
+async function getPlaytimeExcludes() {
+  if (playtimeExcludes !== null) return playtimeExcludes;
+  if (!api) { playtimeExcludes = _parsePlaytime(null); return playtimeExcludes; }
+  playtimeExcludes = _parsePlaytime(await api.get_playtime_filter());
+  return playtimeExcludes;
 }
 
 async function getDedupExcludes() {
@@ -94,7 +113,7 @@ async function getAllExcludes() {
   // Prime both caches with a single combined backend call so dedup + edition
   // filtering share one GOG/Epic library fetch instead of two.  Falls back to
   // the individual lazy loaders if it fails.
-  if (api && dedupExcludes === null && editionExcludes === null) {
+  if (api && dedupExcludes === null && editionExcludes === null && playtimeExcludes === null) {
     // Show a "Filtering…" indicator only if this actually takes a moment
     // (e.g. a cold GOG/Epic library fetch) — no flash for the fast cached case.
     const indicator = setTimeout(() => showFilteringOverlay('Filtering your library…'), 250);
@@ -103,24 +122,27 @@ async function getAllExcludes() {
       if (r && r.status === 'ok') {
         dedupExcludes   = _parseDedup(r.dedup);
         editionExcludes = _parseEdition(r.edition);
+        playtimeExcludes = _parsePlaytime(r.playtime);
       }
     } catch (_) { /* fall through to lazy loaders below */ }
     finally { clearTimeout(indicator); hideFilteringOverlay(); }
   }
-  const [d, e] = await Promise.all([getDedupExcludes(), getEditionExcludes()]);
+  const [d, e, p] = await Promise.all([
+    getDedupExcludes(), getEditionExcludes(), getPlaytimeExcludes(),
+  ]);
   return {
-    steam:     new Set([...d.steam,     ...(e.steam     || [])]),
-    gog:       new Set([...d.gog,       ...(e.gog       || [])]),
-    epic:      new Set([...d.epic,      ...(e.epic      || [])]),
-    battlenet: new Set([...(d.battlenet || [])]),
-    origin:    new Set([...(d.origin    || [])]),
-    uplay:     new Set([...(d.uplay     || [])]),
+    steam:     new Set([...d.steam,     ...(e.steam || []), ...p.steam]),
+    gog:       new Set([...d.gog,       ...(e.gog   || []), ...p.gog]),
+    epic:      new Set([...d.epic,      ...(e.epic  || []), ...p.epic]),
+    battlenet: new Set([...(d.battlenet || []), ...p.battlenet]),
+    origin:    new Set([...(d.origin    || []), ...p.origin]),
+    uplay:     new Set([...(d.uplay     || []), ...p.uplay]),
   };
 }
 
 function invalidateDedupCache()   { dedupExcludes = null; }
 function invalidateEditionCache() { editionExcludes = null; }
-function invalidateAllExcludes()  { dedupExcludes = null; editionExcludes = null; }
+function invalidateAllExcludes()  { dedupExcludes = null; editionExcludes = null; playtimeExcludes = null; }
 
 // Lightweight "working" overlay (used while filtering duplicates can take a
 // moment, e.g. a cold library fetch).
