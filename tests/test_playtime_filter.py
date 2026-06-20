@@ -44,5 +44,53 @@ class TestPlaytimeExcludes(unittest.TestCase):
         self.assertEqual(out, {"steam": ["steam_1"], "gog": []})
 
 
+from unittest import mock
+from pcgr.services.filters import FilterService
+
+
+class _StubSteam:
+    def __init__(self, playtimes):
+        self.playtimes = playtimes
+
+
+class _StubLibrary:
+    def __init__(self, games):
+        self._games = games
+    def get_games(self):
+        return {"status": "ok", "games": self._games}
+
+
+class TestPlaytimeFilterService(unittest.TestCase):
+    def _service(self, playtimes, gog_games, epic_games):
+        return FilterService(
+            steam=_StubSteam(playtimes),
+            gog=_StubLibrary(gog_games),
+            epic=_StubLibrary(epic_games),
+            names=None,
+        )
+
+    def test_disabled_returns_empty(self):
+        svc = self._service({123: 9999}, [], [])
+        with mock.patch("pcgr.services.filters.get_setting") as gs:
+            gs.side_effect = lambda k, d=None: {"playtime_filter_enabled": False}.get(k, d)
+            out = svc.get_playtime_filter()
+        self.assertEqual(out["status"], "ok")
+        self.assertEqual(out["steam"], [])
+
+    def test_enabled_filters_each_platform(self):
+        svc = self._service(
+            playtimes={123: 200 * 60, 456: 10},  # 123 = 200h, 456 = 10min
+            gog_games=[{"id": "gog_1", "platform": "gog", "playtime_minutes": 5000}],
+            epic_games=[{"id": "epic_1", "platform": "epic", "playtime_minutes": 30}],
+        )
+        settings = {"playtime_filter_enabled": True, "playtime_max_hours": 50}
+        with mock.patch("pcgr.services.filters.get_setting") as gs:
+            gs.side_effect = lambda k, d=None: settings.get(k, d)
+            out = svc.get_playtime_filter()
+        self.assertEqual(out["steam"], ["steam_123"])  # 200h > 50h
+        self.assertEqual(out["gog"], ["gog_1"])         # ~83h > 50h
+        self.assertEqual(out["epic"], [])               # 30min kept
+
+
 if __name__ == "__main__":
     unittest.main()

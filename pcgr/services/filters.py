@@ -112,6 +112,73 @@ class FilterService:
         set_setting("edition_preference", preference)
         return {"status": "ok", "preference": preference}
 
+    # ── Playtime filter ───────────────────────────────────────────────────
+
+    def get_playtime_settings(self):
+        """Return the user's playtime-exclusion settings."""
+        return {
+            "status":    "ok",
+            "enabled":   bool(get_setting("playtime_filter_enabled", False)),
+            "max_hours": get_setting("playtime_max_hours", 0),
+        }
+
+    def set_playtime_settings(self, enabled, max_hours):
+        """Persist the playtime-exclusion toggle and hour threshold.  A blank or
+        non-numeric threshold is coerced to 0 (which, while enabled, becomes
+        backlog mode — hide anything with any recorded playtime)."""
+        try:
+            hours = float(max_hours)
+            if hours < 0:
+                hours = 0
+        except (TypeError, ValueError):
+            hours = 0
+        set_setting("playtime_filter_enabled", bool(enabled))
+        set_setting("playtime_max_hours", hours)
+        return self.get_playtime_settings()
+
+    def get_playtime_filter(self, _gog_games=None, _epic_games=None):
+        """Per-platform game ids to hide because their known playtime exceeds the
+        user's threshold.  Same shape as get_duplicate_filter.  `_gog_games` /
+        `_epic_games` let get_all_filters() share one library fetch.  Returns all
+        empty lists when the filter is disabled."""
+        all_platform_ids = list(PLATFORMS) + list(_GOG_INTEGRATED_PREFIXES)
+        empty = {pid: [] for pid in all_platform_ids}
+        if not bool(get_setting("playtime_filter_enabled", False)):
+            return {"status": "ok", **empty, "counts": {}}
+
+        try:
+            threshold = round(float(get_setting("playtime_max_hours", 0)) * 60)
+        except (TypeError, ValueError):
+            threshold = 0
+
+        # Steam: synthesise {id, playtime_minutes} from the parsed playtimes map.
+        steam_games = [{"id": f"steam_{a}", "playtime_minutes": m}
+                       for a, m in (self.steam.playtimes or {}).items()]
+
+        # GOG result already carries playtime_minutes; split by platform so the
+        # integrated launchers (battlenet/origin/uplay) are keyed correctly.
+        gog_all   = (_gog_games if _gog_games is not None
+                     else self.gog.get_games().get("games", []))
+        epic_list = (_epic_games if _epic_games is not None
+                     else self.epic.get_games().get("games", []))
+        per_platform = {
+            "steam":     steam_games,
+            "gog":       [g for g in gog_all if g["platform"] == "gog"],
+            "epic":      epic_list,
+            "battlenet": [g for g in gog_all if g["platform"] == "battlenet"],
+            "origin":    [g for g in gog_all if g["platform"] == "origin"],
+            "uplay":     [g for g in gog_all if g["platform"] == "uplay"],
+        }
+
+        excludes = playtime_excludes(per_platform, threshold)
+        out = {"status": "ok"}
+        counts = {}
+        for pid in all_platform_ids:
+            out[pid] = excludes.get(pid, [])
+            counts[f"{pid}_hidden"] = len(out[pid])
+        out["counts"] = counts
+        return out
+
     def apply_edition_preference(self, games):
         """Strip same-game duplicates within the given list per the user's
         edition_preference setting.  Safe to call on any platform's games."""
@@ -317,22 +384,21 @@ class FilterService:
         return out
 
     def get_all_filters(self):
-        """Compute cross-platform dedup AND same-platform edition excludes,
-        fetching each platform's library only once and sharing it between the
-        two filters.  The frontend calls this instead of get_duplicate_filter +
-        get_edition_filter separately (which each re-queried GOG / Epic)."""
-        dedup_on   = self.get_dedup_settings()["enabled"]
-        edition_on = get_setting("edition_preference", "both") in ("enhanced", "original")
+        """Compute cross-platform dedup, same-platform edition, AND playtime
+        excludes, fetching each platform's library only once and sharing it
+        across all three filters."""
+        dedup_on    = self.get_dedup_settings()["enabled"]
+        edition_on  = get_setting("edition_preference", "both") in ("enhanced", "original")
+        playtime_on = bool(get_setting("playtime_filter_enabled", False))
         # Only fetch the GOG / Epic libraries if a filter actually needs them.
-        # When both are off (the default), this avoids a potentially slow
-        # library fetch — e.g. a cold Epic OAuth call — on the loading path.
-        if dedup_on or edition_on:
+        if dedup_on or edition_on or playtime_on:
             gog  = self.gog.get_games().get("games", [])
             epic = self.epic.get_games().get("games", [])
         else:
             gog, epic = [], []
         return {
-            "status":  "ok",
-            "dedup":   self.get_duplicate_filter(_gog_games=gog, _epic_games=epic),
-            "edition": self.get_edition_filter(_gog_games=gog, _epic_games=epic),
+            "status":   "ok",
+            "dedup":    self.get_duplicate_filter(_gog_games=gog, _epic_games=epic),
+            "edition":  self.get_edition_filter(_gog_games=gog, _epic_games=epic),
+            "playtime": self.get_playtime_filter(_gog_games=gog, _epic_games=epic),
         }
