@@ -149,6 +149,9 @@ class SteamRouletteAPI:
     def get_duplicate_filter(self, _gog_games=None, _epic_games=None):
         return self.filters.get_duplicate_filter(_gog_games, _epic_games)
     def get_all_filters(self):                 return self.filters.get_all_filters()
+    def get_playtime_settings(self):           return self.filters.get_playtime_settings()
+    def set_playtime_settings(self, enabled, max_hours):
+        return self.filters.set_playtime_settings(enabled, max_hours)
 
     # ════════════════════════════════════════════════════════════════════
     #  Cross-cutting: detection, status, user info, settings
