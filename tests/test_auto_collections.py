@@ -37,5 +37,24 @@ class TestBuildGenreBuckets(unittest.TestCase):
             self.assertNotIn(junk, CURATED_GENRES)
 
 
+class TestGenreCache(unittest.TestCase):
+    def test_cache_round_trip_and_merge(self):
+        import tempfile
+        from unittest import mock
+
+        import pcgr.sources.store as store
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "genres.json")
+            with mock.patch.object(store, "GENRES_CACHE", path):
+                self.assertEqual(store.load_genre_cache(), {})
+                store.save_genre_cache({"10": ["Action"]})
+                self.assertEqual(store.load_genre_cache(), {"10": ["Action"]})
+                # merge adds new keys, preserves existing
+                store.merge_genre_cache({"20": ["RPG"], "10": ["IGNORED"]})
+                got = store.load_genre_cache()
+                self.assertEqual(got["20"], ["RPG"])
+                self.assertEqual(got["10"], ["Action"])  # not overwritten
+
+
 if __name__ == "__main__":
     unittest.main()
