@@ -61,6 +61,12 @@ class SteamLauncher(Launcher):
     def collections_path(self):
         return self._collections_path
 
+    @property
+    def playtimes(self):
+        """{appid_int: minutes_int} parsed from localconfig.vdf — used by the
+        playtime filter."""
+        return self._playtimes
+
     def load_from_path(self, path):
         """Public entry point to load a specific collections file (used by the
         file-picker fallback)."""
