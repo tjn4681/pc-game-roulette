@@ -1477,3 +1477,24 @@ body.theme-retroarch .winner-panel { border-color: rgba(87, 198, 164, 0.5); }
 
 /* ── Utility ──────────────────────────────────────────────────────────── */
 .hidden { display: none !important; }
+
+/* Auto-collection genre cards: subtle "auto" marker distinguishing them from
+   hand-made collections. */
+.coll-card-genre { border-style: dashed; }
+.coll-card-genre .coll-name::after {
+  content: "auto";
+  margin-left: 8px;
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.55;
+  vertical-align: middle;
+}
+.coll-card-autocta { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.coll-card-autocta .coll-count { white-space: normal; }
+.genre-progress {
+  grid-column: 1 / -1;
+  padding: 8px 4px;
+  font-size: 0.85rem;
+  opacity: 0.7;
+}

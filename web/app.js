@@ -283,6 +283,16 @@ async function renderAutoGenreCards(grid, allAppIds) {
     note.className = 'genre-progress';
     note.textContent = `Categorizing your library… ${st.categorized} of ${st.total} games`;
     grid.appendChild(note);
+    // Re-render in a few seconds to show newly-categorized games, but only if
+    // the user is still on the Steam grid (avoid background churn elsewhere).
+    clearTimeout(window.__genrePoll);
+    window.__genrePoll = setTimeout(() => {
+      if (currentPlatform === 'steam' && autoCollectionsEnabled) {
+        renderAutoGenreCards(grid, allAppIds);
+      }
+    }, 4000);
+  } else {
+    clearTimeout(window.__genrePoll);
   }
 }
 
@@ -1029,6 +1039,7 @@ async function openSettings() {
   await refreshEpicSettings();
   await refreshDedupSettings();
   await refreshPlaytimeSettings();
+  await refreshAutoCollectionsSettings();
   await refreshEditionPreference();
   await refreshSoundSettings();
   await refreshLauncherVisibility();
@@ -1419,6 +1430,13 @@ async function refreshEditionPreview() {
 
 const _PLATFORM_LABELS = { steam: 'Steam', gog: 'GOG', epic: 'Epic',
                             battlenet: 'Battle.net', origin: 'EA App', uplay: 'Ubisoft Connect' };
+
+async function refreshAutoCollectionsSettings() {
+  if (!api) return;
+  const r = await api.get_auto_collections_enabled();
+  if (r.status !== 'ok') return;
+  document.getElementById('auto-collections-enabled').checked = !!r.enabled;
+}
 
 async function refreshPlaytimeSettings() {
   if (!api) return;
@@ -3073,6 +3091,12 @@ async function init() {
   }
   document.getElementById('playtime-enabled').addEventListener('change', _savePlaytime);
   document.getElementById('playtime-hours').addEventListener('change', _savePlaytime);
+
+  document.getElementById('auto-collections-enabled').addEventListener('change', async (e) => {
+    if (!api) return;
+    await api.set_auto_collections_enabled(e.target.checked);
+    autoCollectionsEnabled = e.target.checked;
+  });
 
   // Edition preference: any of the three radios
   document.querySelectorAll('input[name="edition-pref"]').forEach(el => {
