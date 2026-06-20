@@ -18,6 +18,29 @@ from pcgr.titles import normalize_title
 from pcgr.dedup import find_cross_platform_duplicates, find_same_platform_edition_dupes
 
 
+def playtime_excludes(per_platform_games, threshold_minutes):
+    """For a mapping of platform -> [game dicts], return a dict mapping each
+    platform to the list of game ids whose KNOWN playtime is strictly greater
+    than threshold_minutes.
+
+    Games with missing / None / zero playtime are never excluded — we can't
+    threshold what we can't measure, and a threshold of 0 ("backlog mode")
+    hides anything with any recorded playtime while leaving never-played and
+    unknown games alone.
+    """
+    out = {}
+    for platform, games in per_platform_games.items():
+        excluded = []
+        for g in games:
+            pm = g.get("playtime_minutes") or 0
+            if isinstance(pm, (int, float)) and pm > threshold_minutes:
+                gid = g.get("id")
+                if gid:
+                    excluded.append(gid)
+        out[platform] = excluded
+    return out
+
+
 class FilterService:
     def __init__(self, steam, gog, epic, names):
         self.steam = steam
