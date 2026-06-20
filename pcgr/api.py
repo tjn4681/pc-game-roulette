@@ -135,7 +135,7 @@ class SteamRouletteAPI:
     def launch_retroarch_game(self, game_id):  return self.retroarch.launch(game_id)
 
     # ════════════════════════════════════════════════════════════════════
-    #  Filters (cross-platform dedup + same-platform editions)
+    #  Filters (cross-platform dedup + same-platform editions + playtime)
     # ════════════════════════════════════════════════════════════════════
 
     def get_dedup_settings(self):              return self.filters.get_dedup_settings()
