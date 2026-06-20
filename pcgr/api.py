@@ -22,6 +22,7 @@ from pcgr.sources.galaxy import tags_as_collections
 from pcgr.services.names import NameService
 from pcgr.services.art import ArtService
 from pcgr.services.filters import FilterService
+from pcgr.services.genres import GenreService
 from pcgr.launchers.steam import SteamLauncher
 from pcgr.launchers.gog import GogLauncher
 from pcgr.launchers.epic import EpicLauncher
@@ -42,6 +43,7 @@ class SteamRouletteAPI:
                           (self.steam, self.gog, self.epic, self.retroarch)}
         self.filters   = FilterService(self.steam, self.gog, self.epic, self.names)
         self.art       = ArtService(steam=self.steam)
+        self.genres    = GenreService()
         self._window   = None
         self._platform_user_cache = None
 
@@ -154,6 +156,19 @@ class SteamRouletteAPI:
     def get_playtime_settings(self):           return self.filters.get_playtime_settings()
     def set_playtime_settings(self, enabled, max_hours):
         return self.filters.set_playtime_settings(enabled, max_hours)
+
+    # ════════════════════════════════════════════════════════════════════
+    #  Auto-collections (genre buckets for no-collection users)
+    # ════════════════════════════════════════════════════════════════════
+
+    def get_auto_collections_enabled(self):
+        return {"status": "ok", "enabled": self.genres.is_enabled()}
+    def set_auto_collections_enabled(self, enabled):
+        return self.genres.set_enabled(enabled)
+    def get_auto_collections(self, appids):
+        return self.genres.get_buckets(appids)
+    def get_auto_collection_status(self, appids):
+        return self.genres.status(appids)
 
     # ════════════════════════════════════════════════════════════════════
     #  Cross-cutting: detection, status, user info, settings
