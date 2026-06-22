@@ -46,3 +46,62 @@ def build_genre_buckets(genres_by_appid, library_appids, min_size=MIN_BUCKET_SIZ
         if ids and len(ids) >= min_size:
             out.append({"name": name, "count": len(ids), "appids": sorted(ids)})
     return out
+
+
+# Curated community tags — the "vibes" that genres miss.  {canonical: [synonyms]}.
+# A game's raw SteamSpy tags are matched case-insensitively against the canonical
+# name and its synonyms, and counted under the canonical name.  One knob to tweak.
+CURATED_TAGS = {
+    "Roguelike":      ["Rogue-like", "Rogue-lite", "Roguelite", "Action Roguelike", "Traditional Roguelike"],
+    "Metroidvania":   [],
+    "Soulslike":      ["Souls-like"],
+    "Open World":     ["Open-World"],
+    "Survival":       ["Survival Craft", "Open World Survival Craft"],
+    "Horror":         ["Survival Horror", "Psychological Horror"],
+    "Shooter":        ["FPS", "First-Person Shooter", "Third-Person Shooter", "Looter Shooter"],
+    "Platformer":     ["2D Platformer", "3D Platformer", "Precision Platformer"],
+    "Visual Novel":   [],
+    "Deckbuilder":    ["Deckbuilding", "Card Battler"],
+    "City Builder":   ["Base Building", "Building", "Colony Sim"],
+    "Stealth":        [],
+    "Tower Defense":  [],
+    "Hack and Slash": ["Hack 'n' Slash"],
+    "JRPG":           [],
+    "Sandbox":        [],
+    "Co-op":          ["Online Co-Op", "Local Co-Op", "Co-operative"],
+}
+
+# lowercased synonym/canonical -> canonical
+_TAG_CANON = {}
+for _canon, _syns in CURATED_TAGS.items():
+    _TAG_CANON[_canon.lower()] = _canon
+    for _s in _syns:
+        _TAG_CANON[_s.lower()] = _canon
+
+
+def build_tag_buckets(tags_by_appid, library_appids, min_size=MIN_BUCKET_SIZE):
+    """Build curated community-tag collection cards.
+
+    tags_by_appid : {appid_str: [tag_str, ...]} — the tag cache (already the
+                    game's top-N tags).
+    library_appids : iterable of appid ints — the user's library.
+    Returns [{"name","count","appids"}] for curated tags present in the library
+    with at least ``min_size`` games, ordered by the curated map.  Raw tags are
+    canonicalized (case-insensitive) through CURATED_TAGS; a game lands in every
+    distinct curated tag it matches.  Same card shape as build_genre_buckets.
+    """
+    buckets = {}  # canonical tag -> set(appid_int)
+    for appid in library_appids:
+        tags = tags_by_appid.get(str(appid))
+        if not tags:
+            continue
+        for t in tags:
+            canon = _TAG_CANON.get((t or "").strip().lower())
+            if canon:
+                buckets.setdefault(canon, set()).add(appid)
+    out = []
+    for name in CURATED_TAGS:            # stable, curated order
+        ids = buckets.get(name)
+        if ids and len(ids) >= min_size:
+            out.append({"name": name, "count": len(ids), "appids": sorted(ids)})
+    return out

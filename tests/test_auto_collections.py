@@ -81,5 +81,52 @@ class TestGenreService(unittest.TestCase):
         self.assertEqual(r["collections"][0]["appids"], [10, 20])
 
 
+from pcgr.genres import build_tag_buckets, CURATED_TAGS
+
+
+class TestBuildTagBuckets(unittest.TestCase):
+    def test_synonyms_canonicalize(self):
+        cache = {"10": ["Souls-like"], "20": ["Action Roguelike"], "30": ["Rogue-lite"]}
+        out = build_tag_buckets(cache, [10, 20, 30], min_size=1)
+        by = {b["name"]: b for b in out}
+        self.assertEqual(by["Soulslike"]["appids"], [10])
+        self.assertEqual(by["Roguelike"]["appids"], [20, 30])
+
+    def test_case_insensitive(self):
+        out = build_tag_buckets({"10": ["mEtRoIdVaNiA"]}, [10], min_size=1)
+        self.assertEqual([b["name"] for b in out], ["Metroidvania"])
+
+    def test_min_size_and_library_scope(self):
+        cache = {"10": ["Metroidvania"], "20": ["Roguelike"], "30": ["Roguelike"], "99": ["Roguelike"]}
+        out = build_tag_buckets(cache, [10, 20, 30], min_size=2)  # 99 not in library
+        self.assertEqual([b["name"] for b in out], ["Roguelike"])
+        self.assertEqual(out[0]["appids"], [20, 30])
+
+    def test_non_curated_tags_ignored(self):
+        out = build_tag_buckets({"10": ["Great Soundtrack", "2D", "Singleplayer"]}, [10], min_size=1)
+        self.assertEqual(out, [])
+
+    def test_multi_membership(self):
+        cache = {"10": ["Roguelike", "Metroidvania"], "20": ["Roguelike"], "30": ["Metroidvania"]}
+        out = build_tag_buckets(cache, [10, 20, 30], min_size=2)
+        by = {b["name"]: b["appids"] for b in out}
+        self.assertEqual(by["Roguelike"], [10, 20])
+        self.assertEqual(by["Metroidvania"], [10, 30])
+
+
+class TestCuratedTagsIntegrity(unittest.TestCase):
+    def test_each_term_maps_to_one_canonical(self):
+        seen = {}
+        for canon, syns in CURATED_TAGS.items():
+            for term in [canon] + syns:
+                key = term.lower()
+                self.assertNotIn(key, seen,
+                                 f"{term!r} under {canon!r} also under {seen.get(key)!r}")
+                seen[key] = canon
+
+    def test_no_overlap_with_genres(self):
+        self.assertEqual(set(CURATED_TAGS) & set(CURATED_GENRES), set())
+
+
 if __name__ == "__main__":
     unittest.main()
