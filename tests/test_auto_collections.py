@@ -57,28 +57,33 @@ class TestGenreCache(unittest.TestCase):
 
 
 class TestGenreService(unittest.TestCase):
-    def test_status_counts_cached_vs_pending(self):
+    def _svc(self):
         from pcgr.services.genres import GenreService
-        svc = GenreService()
-        with mock.patch("pcgr.services.genres.load_genre_cache",
-                        return_value={"10": ["Action"], "20": []}):
-            with mock.patch.object(svc, "_warm"):
-                st = svc.status([10, 20, 30])
-        self.assertEqual(st["total"], 3)
-        self.assertEqual(st["categorized"], 2)
-        self.assertEqual(st["pending"], 1)
+        return GenreService()
 
-    def test_get_buckets_uses_cache_and_curated_filter(self):
-        from pcgr.services.genres import GenreService
-        svc = GenreService()
-        cache = {"10": ["Action", "Indie"], "20": ["Action"]}
-        with mock.patch("pcgr.services.genres.load_genre_cache", return_value=cache):
-            with mock.patch.object(svc, "_warm"):
-                r = svc.get_buckets([10, 20])
+    def test_status_pending_until_in_both_caches(self):
+        svc = self._svc()
+        with mock.patch("pcgr.services.genres.load_genre_cache",
+                        return_value={"10": ["Action"], "20": ["Action"]}), \
+             mock.patch("pcgr.services.genres.load_tag_cache",
+                        return_value={"10": ["Roguelike"]}), \
+             mock.patch.object(svc, "_warm"):
+            st = svc.status([10, 20, 30])
+        self.assertEqual(st["total"], 3)
+        self.assertEqual(st["categorized"], 1)   # only 10 is in BOTH caches
+        self.assertEqual(st["pending"], 2)
+
+    def test_get_buckets_returns_genres_then_tags(self):
+        svc = self._svc()
+        with mock.patch("pcgr.services.genres.load_genre_cache",
+                        return_value={"10": ["Action", "Indie"], "20": ["Action"]}), \
+             mock.patch("pcgr.services.genres.load_tag_cache",
+                        return_value={"10": ["Roguelike"], "20": ["Roguelike"]}), \
+             mock.patch.object(svc, "_warm"):
+            r = svc.get_buckets([10, 20])
         self.assertEqual(r["status"], "ok")
         names = [b["name"] for b in r["collections"]]
-        self.assertEqual(names, ["Action"])
-        self.assertEqual(r["collections"][0]["appids"], [10, 20])
+        self.assertEqual(names, ["Action", "Roguelike"])  # genres first, then tags
 
 
 from pcgr.genres import build_tag_buckets, CURATED_TAGS
