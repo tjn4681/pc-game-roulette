@@ -128,5 +128,21 @@ class TestCuratedTagsIntegrity(unittest.TestCase):
         self.assertEqual(set(CURATED_TAGS) & set(CURATED_GENRES), set())
 
 
+class TestTagCache(unittest.TestCase):
+    def test_cache_round_trip_and_merge(self):
+        import tempfile
+        import pcgr.sources.store as store
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "tags.json")
+            with mock.patch.object(store, "TAGS_CACHE", path):
+                self.assertEqual(store.load_tag_cache(), {})
+                store.save_tag_cache({"10": ["Roguelike"]})
+                self.assertEqual(store.load_tag_cache(), {"10": ["Roguelike"]})
+                store.merge_tag_cache({"20": ["Metroidvania"], "10": ["IGNORED"]})
+                got = store.load_tag_cache()
+                self.assertEqual(got["20"], ["Metroidvania"])
+                self.assertEqual(got["10"], ["Roguelike"])  # existing not overwritten
+
+
 if __name__ == "__main__":
     unittest.main()

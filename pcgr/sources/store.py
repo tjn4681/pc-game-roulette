@@ -129,6 +129,27 @@ def fetch_genres(appid):
     return None
 
 
+def fetch_tags(appid, top_n=15):
+    """Return the game's top `top_n` SteamSpy community tags (vote-ordered) as a
+    list of names, or None on failure (don't cache).  An empty list [] means
+    'fetched, but no tags' and should be cached.  SteamSpy is the only source
+    that exposes community tags; it returns `tags` as a vote-ordered
+    {tag: votes} dict (or [] when none)."""
+    try:
+        url = f"https://steamspy.com/api.php?request=appdetails&appid={appid}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+    tags = data.get("tags")
+    if isinstance(tags, dict):
+        return list(tags.keys())[:top_n]   # dict preserves SteamSpy's vote order
+    if isinstance(tags, list):
+        return tags[:top_n]
+    return []
+
+
 # ── Name cache ────────────────────────────────────────────────────────────────
 
 def load_name_cache():
@@ -212,6 +233,54 @@ def merge_genre_cache(new_genres):
             changed = True
     if changed:
         save_genre_cache(cache)
+
+
+# ── Tag cache ───────────────────────────────────────────────────────────────
+
+TAGS_CACHE = os.path.join(CACHE_DIR, "tags.json")
+_TAG_CACHE_LOCK = threading.Lock()
+
+
+def load_tag_cache():
+    if os.path.isfile(TAGS_CACHE):
+        try:
+            with open(TAGS_CACHE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def save_tag_cache(cache):
+    """Atomically persist the tag cache (write-temp-then-replace), locked so the
+    background warmer and the js_api thread can't corrupt the JSON."""
+    with _TAG_CACHE_LOCK:
+        tmp = TAGS_CACHE + ".tmp"
+        try:
+            os.makedirs(CACHE_DIR, exist_ok=True)
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(cache, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, TAGS_CACHE)
+        except OSError:
+            try:
+                if os.path.isfile(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
+
+
+def merge_tag_cache(new_tags):
+    """Read-merge-write the tag cache; only adds appids not already cached."""
+    if not new_tags:
+        return
+    cache = load_tag_cache()
+    changed = False
+    for k, v in new_tags.items():
+        if k not in cache:
+            cache[k] = v
+            changed = True
+    if changed:
+        save_tag_cache(cache)
 
 
 # ── Cross-platform "already searched" cache ──────────────────────────────────
